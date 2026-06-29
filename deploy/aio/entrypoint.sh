@@ -13,6 +13,16 @@ set -eu
 : "${ENABLE_DELETE:=true}"
 
 export DEPLOY_MODE REGISTRY_CONFIG SERVER_ADDR REGISTRY_URL DATA_DIR SQLITE_PATH UPLOAD_DIR CERT_DIR REGISTRY_DATA_DIR ENABLE_DELETE
+
+# Fix permissions when running as root (e.g. volume mounted from host)
+if [ "$(id -u)" = "0" ]; then
+  mkdir -p /data/db /data/certs /data/uploads "$REGISTRY_DATA_DIR"
+  chown -R registry-ui:registry-ui /data /etc/distribution
+  # Re-exec as non-root user
+  exec su-exec registry-ui "$0" "$@"
+fi
+
+# From here on we run as registry-ui (UID 10001)
 mkdir -p /data/db /data/certs /data/uploads "$REGISTRY_DATA_DIR"
 
 if [ "$DEPLOY_MODE" = "aio" ]; then
