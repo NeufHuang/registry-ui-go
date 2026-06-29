@@ -41,7 +41,25 @@ services:
 
 ## 快速开始
 
-### Docker Compose（推荐）
+### Docker Hub（预构建镜像）
+
+直接拉取多架构镜像（linux/amd64、linux/arm64）：
+
+```bash
+# AIO 模式（UI + Registry 单容器）
+docker run -d -p 8080:8080 \
+  -e AUTH_MODE=basic \
+  -e V2_AUTH_MODE=ui \
+  -e ENABLE_DELETE=true \
+  -v ./data:/data \
+  neuf/registry-ui-go:latest
+
+# 或在 docker-compose.aio.yml 中将 build: 替换为 image: neuf/registry-ui-go:latest
+```
+
+查看[可用标签](https://hub.docker.com/r/neuf/registry-ui-go/tags)。
+
+### Docker Compose（从源码构建）
 
 UI 与 Registry 分容器运行，隔离更清晰：
 

@@ -41,7 +41,26 @@ No other changes are required — the UI communicates via the standard Registry 
 
 ## Quick Start
 
-### Docker Compose (Recommended)
+### Docker Hub (Pre-built Image)
+
+Pull the latest multi-arch image (linux/amd64, linux/arm64):
+
+```bash
+# AIO mode (UI + Registry in one container)
+docker run -d -p 8080:8080 \
+  -e AUTH_MODE=basic \
+  -e V2_AUTH_MODE=ui \
+  -e ENABLE_DELETE=true \
+  -v ./data:/data \
+  neuf/registry-ui-go:latest
+
+# Or use docker-compose with pre-built image:
+# Replace 'build:' with 'image: neuf/registry-ui-go:latest' in docker-compose.aio.yml
+```
+
+See [available tags](https://hub.docker.com/r/neuf/registry-ui-go/tags).
+
+### Docker Compose (Build from Source)
 
 UI and Registry run in separate containers:
 
