@@ -27,6 +27,8 @@
 - **HTTPS**：在 UI 中管理 —— 开启开关、上传证书与私钥、重启生效
 - **OCI Artifacts**：支持 Helm Chart、SBOM 等非 Docker 镜像的 OCI 制品
 
+![Registry 版本兼容性](docs/images/registry-compatibility.png)
+
 ### Registry 版本兼容性
 
 默认使用 `registry:3`（Docker Distribution v3），也完全兼容 `registry:2`（v2.7+ / v2.8+）。如需切换到 `registry:2`，只需修改 `docker-compose.yml` 中的镜像标签：
