@@ -27,8 +27,6 @@ A lightweight web interface for managing Docker Distribution / OCI Registry imag
 - **HTTPS**: TLS managed from the UI — toggle on, upload a certificate + key, restart to apply
 - **OCI artifacts**: Supports Helm charts, SBOMs, and other OCI artifacts (not just Docker images)
 
-![Registry Version Compatibility](docs/images/registry-compatibility.png)
-
 ### Registry Version Compatibility
 
 The default setup uses `registry:3` (Docker Distribution v3). It is also fully compatible with `registry:2` (v2.7+ / v2.8+). To switch to `registry:2`, change the image tag in `docker-compose.yml`:
@@ -158,6 +156,8 @@ helm pull oci://localhost:8080/library/mychart --version 0.1.0
 > **Note**: `helm push` requires `--plain-http` for HTTP registries (Helm 3.13+).
 
 ### Web UI
+
+![Registry UI Web Interface](docs/images/ui-screenshot.png)
 
 - **Repositories**: Browse by namespace, search, multi-select
 - **Tags**: View tag list, manifest details, multi-arch info, config
