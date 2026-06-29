@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+bin/
+*.tsbuildinfo
+
+# Local config / secrets
+.env
+.env.*
+!.env.example
+config.local.*
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime data
+data/
+
+# Development artifacts
+plan.md
+registry-ui
+Dockerfile.runtime
+docker-compose.dual.yml
+docker-compose.runtime-dual.yml
+AGENTS.md

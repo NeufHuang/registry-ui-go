@@ -1,0 +1,12 @@
+.git
+bin/*
+!bin/registry-ui
+data
+.env
+.env.*
+!.env.example
+*.log
+node_modules
+dist
+build
+.DS_Store

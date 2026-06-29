@@ -1,0 +1,17 @@
+# UI-only image. Use this when Registry runs separately.
+FROM golang:1.26-alpine AS builder
+ENV GOPROXY=https://goproxy.cn,direct
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY backend ./backend
+RUN go build -trimpath -ldflags="-s -w" -o /out/registry-ui ./backend/cmd/registry-ui
+
+FROM alpine:3.24
+RUN adduser -D -H -u 10001 registry-ui && mkdir -p /data/db /data/certs /data/uploads /data/registry && chown -R registry-ui:registry-ui /data
+WORKDIR /app
+COPY --from=builder /out/registry-ui /usr/local/bin/registry-ui
+USER registry-ui
+EXPOSE 8080
+ENV SERVER_ADDR=:8080 DATA_DIR=/data SQLITE_PATH=/data/db/registry-ui.db UPLOAD_DIR=/data/uploads CERT_DIR=/data/certs REGISTRY_DATA_DIR=/data/registry
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/registry-ui"]
