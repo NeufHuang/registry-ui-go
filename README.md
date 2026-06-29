@@ -27,6 +27,18 @@ A lightweight web interface for managing Docker Distribution / OCI Registry imag
 - **HTTPS**: TLS managed from the UI — toggle on, upload a certificate + key, restart to apply
 - **OCI artifacts**: Supports Helm charts, SBOMs, and other OCI artifacts (not just Docker images)
 
+### Registry Version Compatibility
+
+The default setup uses `registry:3` (Docker Distribution v3). It is also fully compatible with `registry:2` (v2.7+ / v2.8+). To switch to `registry:2`, change the image tag in `docker-compose.yml`:
+
+```yaml
+services:
+  registry:
+    image: registry:2
+```
+
+No other changes are required — the UI communicates via the standard Registry V2 / OCI Distribution API.
+
 ## Quick Start
 
 ### Docker Compose (Recommended)
