@@ -117,6 +117,10 @@ func (s *Server) deleteTagsAware(r *http.Request, name string, selectedTags []st
 				_ = s.store.AddAuditWithImage(ctx, s.currentUserID(r), "delete", name, tg, digest, "ok", "last tag removed; digest deleted (restore from recycle bin before GC)", imageID, name+":"+tg)
 				results = append(results, tagDeleteResult{Tag: tg, Action: "delete", Ok: true})
 			}
+			// Clean up empty repo directory if no tags remain.
+			if tagsResp, err := client.Tags(ctx, name); err == nil && len(tagsResp.Tags) == 0 {
+				s.cleanupRepoDir(ctx, name)
+			}
 			continue
 		}
 
