@@ -1089,7 +1089,7 @@ func (s *Store) DeleteRepository(ctx context.Context, id int64) error {
 }
 
 func (s *Store) ListAllRepoNames(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT n.name || '/' || r.name FROM repositories r JOIN namespaces n ON n.id=r.namespace_id ORDER BY 1`)
+	rows, err := s.db.QueryContext(ctx, `SELECT CASE WHEN n.name = '' THEN r.name ELSE n.name || '/' || r.name END FROM repositories r JOIN namespaces n ON n.id=r.namespace_id ORDER BY 1`)
 	if err != nil {
 		return nil, err
 	}

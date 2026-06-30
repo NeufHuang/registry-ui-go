@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -249,33 +248,18 @@ func (s *Server) handleRepositories(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	client := s.client
-	out, err := client.Catalog(r.Context(), r.URL.Query().Get("n"), r.URL.Query().Get("last"))
+	repos, err := s.store.ListAllRepoNames(r.Context())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeError(w, http.StatusInternalServerError, err)
 		return
-	}
-	// Merge repos that exist only in DB (created via UI but no manifest pushed yet)
-	if dbRepos, derr := s.store.ListAllRepoNames(r.Context()); derr == nil {
-		seen := make(map[string]bool, len(out.Repositories))
-		for _, repo := range out.Repositories {
-			seen[repo] = true
-		}
-		for _, repo := range dbRepos {
-			if !seen[repo] {
-				out.Repositories = append(out.Repositories, repo)
-				seen[repo] = true
-			}
-		}
-		sort.Strings(out.Repositories)
 	}
 	// apply permissions: filter repositories by user permissions
 	u := s.GetCurrentUser(r)
 	if u != nil && !u.IsAdmin {
 		perms, errPerm := s.store.ListUserPermissions(r.Context(), u.ID)
 		if errPerm == nil && len(perms) > 0 {
-			filtered := make([]string, 0, len(out.Repositories))
-			for _, repo := range out.Repositories {
+			filtered := make([]string, 0, len(repos))
+			for _, repo := range repos {
 				// pattern match: exact repo or namespace prefix
 				allowed := false
 				for _, p := range perms {
@@ -288,10 +272,38 @@ func (s *Server) handleRepositories(w http.ResponseWriter, r *http.Request) {
 					filtered = append(filtered, repo)
 				}
 			}
-			out.Repositories = filtered
+			repos = filtered
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	// Paginate to match CatalogResponse shape
+	n := r.URL.Query().Get("n")
+	last := r.URL.Query().Get("last")
+	pageSize := 100
+	if n != "" {
+		if ps, _ := strconv.Atoi(n); ps > 0 {
+			pageSize = ps
+		}
+	}
+	start := 0
+	if last != "" {
+		for i, repo := range repos {
+			if repo > last {
+				start = i
+				break
+			}
+		}
+	}
+	end := start + pageSize
+	if end > len(repos) {
+		end = len(repos)
+	}
+	resp := map[string]any{
+		"repositories": repos[start:end],
+	}
+	if end < len(repos) {
+		resp["nextLast"] = repos[end-1]
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Request) {
