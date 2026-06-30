@@ -1299,8 +1299,20 @@ func (s *Server) cleanupRepoDir(ctx context.Context, repo string) {
 	if repo == "" || strings.Contains(repo, "..") {
 		return
 	}
-	// Remove DB record first (before filesystem so that UI stops showing it).
-	if rid, err := s.resolveRepo(ctx, repo); err == nil && rid > 0 {
+	// Find and delete DB record without creating anything (resolveRepo upserts).
+	var rid int64
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) == 2 {
+		if r, err := s.store.GetRepositoryByNamespacedName(ctx, parts[0], parts[1]); err == nil {
+			rid = r.ID
+		}
+	} else {
+		// Single-segment repo (root namespace): look for namespace "".
+		if r, err := s.store.GetRepositoryByNamespacedName(ctx, "", parts[0]); err == nil {
+			rid = r.ID
+		}
+	}
+	if rid > 0 {
 		if err := s.store.DeleteRepository(ctx, rid); err != nil {
 			log.Printf("cleanupRepoDir: failed to delete repo %s from DB: %v", repo, err)
 		} else {
@@ -1322,15 +1334,19 @@ func (s *Server) cleanupRepoDir(ctx context.Context, repo string) {
 		return
 	}
 	log.Printf("cleanupRepoDir: removed empty repo directory %s", repoDir)
-	// Attempt to remove the parent namespace directory if it is now empty.
-	nsDir := filepath.Dir(repoDir)
-	if nsDir != base {
-		if entries, err := os.ReadDir(nsDir); err == nil && len(entries) == 0 {
-			if err := os.Remove(nsDir); err != nil {
-				log.Printf("cleanupRepoDir: failed to remove empty namespace %s: %v", nsDir, err)
-			} else {
-				log.Printf("cleanupRepoDir: removed empty namespace directory %s", nsDir)
-			}
+	// Walk upward and remove any empty namespace directories.
+	for nsDir := filepath.Dir(repoDir); nsDir != base && strings.HasPrefix(nsDir, base+string(filepath.Separator)); nsDir = filepath.Dir(nsDir) {
+		entries, err := os.ReadDir(nsDir)
+		if err != nil {
+			break
 		}
+		if len(entries) > 0 {
+			break
+		}
+		if err := os.Remove(nsDir); err != nil {
+			log.Printf("cleanupRepoDir: failed to remove empty namespace %s: %v", nsDir, err)
+			break
+		}
+		log.Printf("cleanupRepoDir: removed empty namespace directory %s", nsDir)
 	}
 }
