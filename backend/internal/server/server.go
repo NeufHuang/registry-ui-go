@@ -1334,19 +1334,15 @@ func (s *Server) cleanupRepoDir(ctx context.Context, repo string) {
 		return
 	}
 	log.Printf("cleanupRepoDir: removed empty repo directory %s", repoDir)
-	// Walk upward and remove any empty namespace directories.
-	for nsDir := filepath.Dir(repoDir); nsDir != base && strings.HasPrefix(nsDir, base+string(filepath.Separator)); nsDir = filepath.Dir(nsDir) {
-		entries, err := os.ReadDir(nsDir)
-		if err != nil {
-			break
+	// Remove the immediate parent namespace directory only if it is now empty.
+	nsDir := filepath.Dir(repoDir)
+	if nsDir != base {
+		if entries, err := os.ReadDir(nsDir); err == nil && len(entries) == 0 {
+			if err := os.Remove(nsDir); err != nil {
+				log.Printf("cleanupRepoDir: failed to remove empty namespace %s: %v", nsDir, err)
+			} else {
+				log.Printf("cleanupRepoDir: removed empty namespace directory %s", nsDir)
+			}
 		}
-		if len(entries) > 0 {
-			break
-		}
-		if err := os.Remove(nsDir); err != nil {
-			log.Printf("cleanupRepoDir: failed to remove empty namespace %s: %v", nsDir, err)
-			break
-		}
-		log.Printf("cleanupRepoDir: removed empty namespace directory %s", nsDir)
 	}
 }
