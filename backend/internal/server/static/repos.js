@@ -17,6 +17,8 @@ function renderNamespaces() {
   const sel = el('namespaceFilter'); const current = sel.value;
   const catalogNs = state.repos.map(namespaceOf);
   let allNs = [...new Set([...state.namespaces, ...catalogNs])].sort();
+  allNs = allNs.map(ns => ns === '' ? t('root') : ns);
+  allNs = [...new Set(allNs)].sort();
   if (state.user && !state.user.isAdmin && state.permissions.length > 0) {
     allNs = allNs.filter(ns => state.permissions.some(p => p.canRead && (ns === p.namespacePattern || ns.startsWith(p.namespacePattern + '/'))));
   }
