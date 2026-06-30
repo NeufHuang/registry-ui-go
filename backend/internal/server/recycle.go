@@ -92,6 +92,18 @@ func (s *Server) handleRecycleByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := client.PutManifest(r.Context(), item.Repo, item.Reference, item.ContentType, item.ManifestBody); err != nil {
 		_ = s.store.AddAudit(r.Context(), s.currentUserID(r), "recycle.restore", item.Repo, item.Reference, item.Digest, "error", err.Error())
+		// If the underlying blobs have been garbage-collected, the manifest can
+		// no longer be restored. Mark the item as gc_expired so the UI can
+		// surface a clear explanation instead of a raw registry error.
+		if strings.Contains(err.Error(), "MANIFEST_BLOB_UNKNOWN") {
+			_ = s.store.MarkRecycleGCExpired(r.Context(), id)
+			writeJSON(w, http.StatusGone, map[string]any{
+				"error":   "gc_expired",
+				"details": "The image layers (blobs) referenced by this manifest have been garbage-collected by the registry. The manifest is still recorded in the recycle bin, but the image can no longer be restored. You may keep the record or delete it permanently.",
+				"item":    store.RecycleItem{ID: item.ID, Repo: item.Repo, Reference: item.Reference, Digest: item.Digest, ContentType: item.ContentType, Status: "gc_expired", DeletedAt: item.DeletedAt},
+			})
+			return
+		}
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}

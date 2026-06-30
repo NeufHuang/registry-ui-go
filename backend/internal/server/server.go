@@ -790,14 +790,17 @@ func (s *Server) resolveOverwriteAction(ctx context.Context, repo string) string
 // resolveRepo resolves a repo name (e.g. "library/nginx") to a repository ID, creating namespace and repo if needed.
 func (s *Server) resolveRepo(ctx context.Context, fullName string) (int64, error) {
 	parts := strings.SplitN(fullName, "/", 2)
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("invalid repo name: %s", fullName)
+	nsName := ""
+	repoName := fullName
+	if len(parts) == 2 {
+		nsName = parts[0]
+		repoName = parts[1]
 	}
-	ns, err := s.store.UpsertNamespace(ctx, parts[0])
+	ns, err := s.store.UpsertNamespace(ctx, nsName)
 	if err != nil {
 		return 0, err
 	}
-	repo, err := s.store.UpsertRepository(ctx, ns.ID, parts[1])
+	repo, err := s.store.UpsertRepository(ctx, ns.ID, repoName)
 	if err != nil {
 		return 0, err
 	}

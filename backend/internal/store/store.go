@@ -1345,7 +1345,7 @@ func (s *Store) ListRecycleItems(ctx context.Context, includeRestored bool, limi
 	}
 	where := `1=1`
 	if !includeRestored {
-		where += ` AND status='pending_gc'`
+		where += ` AND status IN ('pending_gc','gc_expired')`
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,repo,reference,digest,content_type,status,image_id,deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE `+where+` ORDER BY deleted_at DESC,id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -1384,6 +1384,11 @@ func (s *Store) DeleteRecycleItem(ctx context.Context, id int64) error {
 
 func (s *Store) MarkRecycleRestored(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE recycle_bin SET status='restored', restored_at=CURRENT_TIMESTAMP WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) MarkRecycleGCExpired(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE recycle_bin SET status='gc_expired' WHERE id=?`, id)
 	return err
 }
 
