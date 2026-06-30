@@ -440,9 +440,9 @@ func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Reques
 				imageID = &img.ID
 			}
 			_ = s.store.AddAuditWithImage(r.Context(), s.currentUserID(r), "delete", name, "", ref, "ok", "digest deleted; pending_gc snapshots can be restored before registry garbage-collect", imageID, name+"@"+ref)
-			// Clean up empty repo directory if no tags remain (or repo already gone from registry).
+			// Clean up DB record if no tags remain (or repo already gone from registry).
 			if tagsResp, err := client.Tags(r.Context(), name); (err == nil && len(tagsResp.Tags) == 0) || (err != nil && strings.Contains(err.Error(), "status=404")) {
-				s.cleanupRepoDir(r.Context(), name)
+				s.cleanupRepoDB(r.Context(), name)
 			}
 			writeJSON(w, http.StatusAccepted, map[string]any{"deleted": true, "name": name, "digest": ref, "snapshotCount": snapshotCount, "gcRequired": true, "message": "digest deleted; restore from recycle bin before registry garbage-collect, or run GC later to reclaim storage"})
 			return
@@ -1292,12 +1292,13 @@ func (s *Server) RunBlobGC(ctx context.Context) (int, int64, error) {
 			}
 		}
 	}
+	s.cleanupEmptyRepoDirs()
 	return deleted, freed, nil
 }
 
-// cleanupRepoDir removes the empty repository directory from the registry
-// filesystem and the DB record after all tags have been deleted.
-func (s *Server) cleanupRepoDir(ctx context.Context, repo string) {
+// cleanupRepoDB removes the repository record from SQLite after all tags
+// have been deleted. Filesystem cleanup is left to garbage collection.
+func (s *Server) cleanupRepoDB(ctx context.Context, repo string) {
 	// Validate repo name to prevent path traversal.
 	if repo == "" || strings.Contains(repo, "..") {
 		return
@@ -1317,35 +1318,40 @@ func (s *Server) cleanupRepoDir(ctx context.Context, repo string) {
 	}
 	if rid > 0 {
 		if err := s.store.DeleteRepository(ctx, rid); err != nil {
-			log.Printf("cleanupRepoDir: failed to delete repo %s from DB: %v", repo, err)
+			log.Printf("cleanupRepoDB: failed to delete repo %s from DB: %v", repo, err)
 		} else {
-			log.Printf("cleanupRepoDir: deleted repo %s (id=%d) from DB", repo, rid)
+			log.Printf("cleanupRepoDB: deleted repo %s (id=%d) from DB", repo, rid)
 		}
 	}
+}
+
+// cleanupEmptyRepoDirs scans the registry filesystem for empty repository
+// directories and removes them. Called after garbage-collect.
+func (s *Server) cleanupEmptyRepoDirs() {
 	base := filepath.Join(s.cfg.RegistryDataDir, "docker", "registry", "v2", "repositories")
-	repoDir := filepath.Join(base, filepath.Clean(repo))
-	// Ensure the resolved path is within the repositories base directory.
-	if !strings.HasPrefix(repoDir, base+string(filepath.Separator)) && repoDir != base {
-		return
-	}
-	// Check if the directory exists before attempting removal.
-	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
-		return
-	}
-	if err := os.RemoveAll(repoDir); err != nil {
-		log.Printf("cleanupRepoDir: failed to remove %s: %v", repoDir, err)
-		return
-	}
-	log.Printf("cleanupRepoDir: removed empty repo directory %s", repoDir)
-	// Remove the immediate parent namespace directory only if it is now empty.
-	nsDir := filepath.Dir(repoDir)
-	if nsDir != base {
-		if entries, err := os.ReadDir(nsDir); err == nil && len(entries) == 0 {
-			if err := os.Remove(nsDir); err != nil {
-				log.Printf("cleanupRepoDir: failed to remove empty namespace %s: %v", nsDir, err)
-			} else {
-				log.Printf("cleanupRepoDir: removed empty namespace directory %s", nsDir)
-			}
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable
 		}
+		if !d.IsDir() {
+			return nil
+		}
+		if path == base {
+			return nil
+		}
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return nil
+		}
+		if len(entries) > 0 {
+			return nil
+		}
+		if err := os.Remove(path); err == nil {
+			log.Printf("cleanupEmptyRepoDirs: removed empty dir %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("cleanupEmptyRepoDirs: walk failed: %v", err)
 	}
 }
