@@ -440,8 +440,8 @@ func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Reques
 				imageID = &img.ID
 			}
 			_ = s.store.AddAuditWithImage(r.Context(), s.currentUserID(r), "delete", name, "", ref, "ok", "digest deleted; pending_gc snapshots can be restored before registry garbage-collect", imageID, name+"@"+ref)
-			// Clean up empty repo directory if no tags remain.
-			if tagsResp, err := client.Tags(r.Context(), name); err == nil && len(tagsResp.Tags) == 0 {
+			// Clean up empty repo directory if no tags remain (or repo already gone from registry).
+			if tagsResp, err := client.Tags(r.Context(), name); (err == nil && len(tagsResp.Tags) == 0) || (err != nil && strings.Contains(err.Error(), "status=404")) {
 				s.cleanupRepoDir(r.Context(), name)
 			}
 			writeJSON(w, http.StatusAccepted, map[string]any{"deleted": true, "name": name, "digest": ref, "snapshotCount": snapshotCount, "gcRequired": true, "message": "digest deleted; restore from recycle bin before registry garbage-collect, or run GC later to reclaim storage"})

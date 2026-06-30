@@ -3,6 +3,7 @@ package server
 import (
 	"log"
 	"net/http"
+	"strings"
 )
 
 // tagDeleteResult describes the outcome of removing a single tag.
@@ -117,8 +118,8 @@ func (s *Server) deleteTagsAware(r *http.Request, name string, selectedTags []st
 				_ = s.store.AddAuditWithImage(ctx, s.currentUserID(r), "delete", name, tg, digest, "ok", "last tag removed; digest deleted (restore from recycle bin before GC)", imageID, name+":"+tg)
 				results = append(results, tagDeleteResult{Tag: tg, Action: "delete", Ok: true})
 			}
-			// Clean up empty repo directory if no tags remain.
-			if tagsResp, err := client.Tags(ctx, name); err == nil && len(tagsResp.Tags) == 0 {
+			// Clean up empty repo directory if no tags remain (or repo already gone from registry).
+			if tagsResp, err := client.Tags(ctx, name); (err == nil && len(tagsResp.Tags) == 0) || (err != nil && strings.Contains(err.Error(), "status=404")) {
 				s.cleanupRepoDir(ctx, name)
 			}
 			continue
