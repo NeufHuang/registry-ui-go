@@ -1293,11 +1293,19 @@ func (s *Server) RunBlobGC(ctx context.Context) (int, int64, error) {
 }
 
 // cleanupRepoDir removes the empty repository directory from the registry
-// filesystem after all tags have been deleted.
+// filesystem and the DB record after all tags have been deleted.
 func (s *Server) cleanupRepoDir(ctx context.Context, repo string) {
 	// Validate repo name to prevent path traversal.
 	if repo == "" || strings.Contains(repo, "..") {
 		return
+	}
+	// Remove DB record first (before filesystem so that UI stops showing it).
+	if rid, err := s.resolveRepo(ctx, repo); err == nil && rid > 0 {
+		if err := s.store.DeleteRepository(ctx, rid); err != nil {
+			log.Printf("cleanupRepoDir: failed to delete repo %s from DB: %v", repo, err)
+		} else {
+			log.Printf("cleanupRepoDir: deleted repo %s (id=%d) from DB", repo, rid)
+		}
 	}
 	base := filepath.Join(s.cfg.RegistryDataDir, "docker", "registry", "v2", "repositories")
 	repoDir := filepath.Join(base, filepath.Clean(repo))

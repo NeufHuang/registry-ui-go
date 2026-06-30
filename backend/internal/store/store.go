@@ -1071,6 +1071,23 @@ func (s *Store) GetRepositoryByNamespacedName(ctx context.Context, nsName, repoN
 	return repo, nil
 }
 
+// DeleteRepository removes a repository and all its associated images from the DB.
+// It first deletes images (because of the foreign key constraint) then the repo.
+func (s *Store) DeleteRepository(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM images WHERE repository_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM repositories WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ListAllRepoNames(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT n.name || '/' || r.name FROM repositories r JOIN namespaces n ON n.id=r.namespace_id ORDER BY 1`)
 	if err != nil {
