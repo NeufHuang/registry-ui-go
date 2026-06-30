@@ -211,14 +211,27 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			switch s.v2AuthMode() {
 			case "ui", "basic", "same":
 				// Allow anonymous pull for repos with anonymous_pull enabled
-				if (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.Contains(r.URL.Path, "/manifests/") {
-					parts := strings.Split(r.URL.Path, "/manifests/")
-					if len(parts) == 2 {
-						repoPath := strings.TrimPrefix(parts[0], "/v2/")
-						if s.isAnonymousPullAllowed(r.Context(), repoPath) {
-							next.ServeHTTP(w, r)
-							return
+				if r.Method == http.MethodGet || r.Method == http.MethodHead {
+					repoPath := ""
+					if strings.Contains(r.URL.Path, "/manifests/") {
+						parts := strings.Split(r.URL.Path, "/manifests/")
+						if len(parts) == 2 {
+							repoPath = strings.TrimPrefix(parts[0], "/v2/")
 						}
+					} else if strings.Contains(r.URL.Path, "/blobs/") {
+						parts := strings.Split(r.URL.Path, "/blobs/")
+						if len(parts) == 2 {
+							repoPath = strings.TrimPrefix(parts[0], "/v2/")
+						}
+					}
+					if repoPath != "" && s.isAnonymousPullAllowed(r.Context(), repoPath) {
+						next.ServeHTTP(w, r)
+						return
+					}
+					// Allow /v2/ ping for repos whose manifests/blobs are anonymously accessible
+					if r.URL.Path == "/v2/" || r.URL.Path == "/v2" {
+						next.ServeHTTP(w, r)
+						return
 					}
 				}
 				if !s.requireUIAuth(w, r) {
