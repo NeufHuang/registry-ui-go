@@ -243,6 +243,13 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 						writeJSON(w, http.StatusForbidden, registry.ErrorResponse{Error: "forbidden", Details: "no permission to access this repository"})
 						return
 					}
+					// Check write permission for mutating V2 API requests (push, delete)
+					if r.Method == http.MethodPut || r.Method == http.MethodPost || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
+						if !s.userCanWriteRepo(r, repoPath) {
+							writeJSON(w, http.StatusForbidden, registry.ErrorResponse{Error: "forbidden", Details: "no write permission for this repository"})
+							return
+						}
+					}
 				}
 			case "registry", "proxy", "off":
 				// Leave Docker Registry API auth behavior to the configured registry/proxy.

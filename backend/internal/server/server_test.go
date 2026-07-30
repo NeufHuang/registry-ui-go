@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/neuf/registry-ui/backend/internal/config"
+	"github.com/neuf/registry-ui/backend/internal/store"
 )
 
 func TestExtractV2RepoPath(t *testing.T) {
@@ -265,4 +268,410 @@ func TestGCLockBlocksPush(t *testing.T) {
 	if rr3.Code == http.StatusServiceUnavailable {
 		t.Errorf("PUT after GC: should not be blocked, got %d", rr3.Code)
 	}
+}
+
+// TestImmutableTagAllowsFirstPush verifies that matching an immutable-tag
+// pattern on a tag that does not yet exist does NOT block the push.
+func TestImmutableTagAllowsFirstPush(t *testing.T) {
+	ctx := context.Background()
+
+	// Mock registry: tag does NOT exist yet (HEAD returns 404)
+	mockReg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/manifests/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockReg.Close()
+
+	// Create temp store
+	dbPath := t.TempDir() + "/test.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Create namespace and repo
+	ns, err := st.UpsertNamespace(ctx, "testns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRepository(ctx, ns.ID, "testrepo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Set repo to immutable mode
+	if err := st.SetRepositoryProtectionMode(ctx, "testns", "testrepo", store.ProtectionModeImmutable); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{RegistryURL: mockReg.URL}
+	srv := New(cfg, st)
+
+	// First push: tag "v1" doesn't exist yet — should pass
+	req := httptest.NewRequest(http.MethodPut, "/v2/testns/testrepo/manifests/v1", nil)
+	rr := httptest.NewRecorder()
+	srv.newV2Proxy().ServeHTTP(rr, req)
+
+	// 409 Conflict means blocked by immutable rule — FAIL
+	// We expect no 409 (either 200 or 502 from proxy is fine)
+	if rr.Code == http.StatusConflict {
+		t.Errorf("first push should NOT be blocked by immutable rules, got 409 Conflict")
+	}
+	if rr.Code == http.StatusForbidden {
+		t.Errorf("first push should not be 403 Forbidden")
+	}
+}
+
+// TestImmutableTagBlocksOverwrite verifies that overwriting an existing tag
+// matching an immutable pattern IS blocked.
+func TestImmutableTagBlocksOverwrite(t *testing.T) {
+	ctx := context.Background()
+
+	// Mock registry: tag EXISTS (HEAD returns 200 + digest header)
+	mockReg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/manifests/") {
+			w.Header().Set("Docker-Content-Digest", "sha256:abcdef1234567890")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockReg.Close()
+
+	dbPath := t.TempDir() + "/test.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ns, err := st.UpsertNamespace(ctx, "testns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRepository(ctx, ns.ID, "testrepo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetRepositoryProtectionMode(ctx, "testns", "testrepo", store.ProtectionModeImmutable); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{RegistryURL: mockReg.URL}
+	srv := New(cfg, st)
+
+	req := httptest.NewRequest(http.MethodPut, "/v2/testns/testrepo/manifests/v1", nil)
+	rr := httptest.NewRecorder()
+	srv.newV2Proxy().ServeHTTP(rr, req)
+
+	// Tag exists and matches immutable pattern — should be 409
+	if rr.Code != http.StatusConflict {
+		t.Errorf("overwrite of immutable tag should return 409, got %d", rr.Code)
+	}
+}
+
+// TestUserCanWriteRepo verifies the userCanWriteRepo function logic
+func TestUserCanWriteRepo(t *testing.T) {
+	ctx := context.Background()
+
+	dbPath := t.TempDir() + "/test.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Create namespace
+	_, err = st.UpsertNamespace(ctx, "testns")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two users: one read-only, one read-write
+	roUser, err := st.CreateUser(ctx, "readonly", "hash", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rwUser, err := st.CreateUser(ctx, "readwrite", "hash", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminUser, err := st.CreateUser(ctx, "testadmin", "hash", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Give roUser read-only permission, rwUser read-write
+	_, err = st.UpsertUserPermission(ctx, store.UserPermission{
+		UserID:           roUser.ID,
+		NamespacePattern: "testns",
+		CanRead:          true,
+		CanWrite:         false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertUserPermission(ctx, store.UserPermission{
+		UserID:           rwUser.ID,
+		NamespacePattern: "testns",
+		CanRead:          true,
+		CanWrite:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(config.Config{RegistryURL: "http://localhost:5000"}, st)
+
+	tests := []struct {
+		name     string
+		user     store.User
+		repo     string
+		want     bool
+	}{
+		{"admin can write any repo", adminUser, "testns/testrepo", true},
+		{"admin can write unknown ns", adminUser, "otherns/testrepo", true},
+		{"read-only user cannot write", roUser, "testns/testrepo", false},
+		{"read-only cannot write other ns", roUser, "otherns/testrepo", false},
+		{"read-write user can write", rwUser, "testns/testrepo", true},
+		{"read-write cannot write other ns", rwUser, "otherns/testrepo", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/v2/irrelevant", nil)
+			req = req.WithContext(context.WithValue(req.Context(), ctxUserKey{}, tc.user))
+
+			got := srv.userCanWriteRepo(req, tc.repo)
+			if got != tc.want {
+				t.Errorf("userCanWriteRepo(%q, %q) = %v, want %v", tc.user.Username, tc.repo, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPushCreateSingleSegmentRepo verifies that a single-segment repo
+// (root namespace) is also checked against the push_create restriction.
+func TestImmutableTagRulesMode(t *testing.T) {
+	// The checkImmutableTag function with forceImmutable=false (rules mode)
+	ctx := context.Background()
+
+	dbPath := t.TempDir() + "/test.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Create an immutable tag rule matching "v*"
+	_, err = st.CreateImmutableTagRule(ctx, store.ImmutableTagRule{Pattern: "v*", Description: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ns, err := st.UpsertNamespace(ctx, "testns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRepository(ctx, ns.ID, "testrepo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock registry: tag v1 exists (overwrite scenario)
+	mockReg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/manifests/v1") {
+			w.Header().Set("Docker-Content-Digest", "sha256:abcdef1234567890")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockReg.Close()
+
+	cfg := config.Config{RegistryURL: mockReg.URL}
+	srv := New(cfg, st)
+
+	// Overwrite v1 — should be blocked by rules-mode immutable tag check
+	req := httptest.NewRequest(http.MethodPut, "/v2/testns/testrepo/manifests/v1", nil)
+	rr := httptest.NewRecorder()
+	srv.newV2Proxy().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Errorf("overwrite of tag matching rules-mode pattern should return 409, got %d", rr.Code)
+	}
+}
+
+// TestPushCreateSingleSegmentRepo verifies that single-segment repos
+// (no namespace, e.g. "alpine") are also checked against push_create.
+func TestPushCreateSingleSegmentRepo(t *testing.T) {
+	ctx := context.Background()
+
+	dbPath := t.TempDir() + "/test.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Disable push_create globally
+	if err := st.SetSetting(ctx, "push_create_repo", "false"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock registry (any response is fine, the check happens before proxying)
+	mockReg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockReg.Close()
+
+	cfg := config.Config{RegistryURL: mockReg.URL}
+	srv := New(cfg, st)
+
+	// Push to single-segment repo "alpine" that doesn't exist in DB
+	req := httptest.NewRequest(http.MethodPut, "/v2/alpine/manifests/latest", nil)
+	rr := httptest.NewRecorder()
+	srv.newV2Proxy().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("push to non-existent single-segment repo with push_create disabled should return 403, got %d", rr.Code)
+	}
+
+	// Now create the repo in DB and verify push succeeds (reaches mock with 200 or 502 proxy error)
+	ns, err := st.UpsertNamespace(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRepository(ctx, ns.ID, "alpine")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPut, "/v2/alpine/manifests/latest", nil)
+	rr2 := httptest.NewRecorder()
+	srv.newV2Proxy().ServeHTTP(rr2, req2)
+
+	if rr2.Code == http.StatusForbidden {
+		t.Errorf("push to existing single-segment repo should not be blocked, got 403")
+	}
+}
+
+// TestV2WritePermissionInWithAuth verifies that WITH the withAuth middleware,
+// a read-only user receives 403 for mutating V2 requests while admin is allowed.
+func TestV2WritePermissionInWithAuth(t *testing.T) {
+	ctx := context.Background()
+
+	passHash, err := store.HashPassword("testpass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := t.TempDir() + "/test.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Create namespace and repo
+	ns, err := st.UpsertNamespace(ctx, "testns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertRepository(ctx, ns.ID, "testrepo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create read-only user
+	_, err = st.CreateUser(ctx, "roatest", passHash, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roUser, err := st.GetUserByUsername(ctx, "roatest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertUserPermission(ctx, store.UserPermission{
+		UserID:           roUser.ID,
+		NamespacePattern: "testns",
+		CanRead:          true,
+		CanWrite:         false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create read-write user
+	_, err = st.CreateUser(ctx, "rwtest", passHash, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rwUser, err := st.GetUserByUsername(ctx, "rwtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertUserPermission(ctx, store.UserPermission{
+		UserID:           rwUser.ID,
+		NamespacePattern: "testns",
+		CanRead:          true,
+		CanWrite:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock registry handling any request
+	mockReg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Docker-Content-Digest", "sha256:abcdef1234567890")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockReg.Close()
+
+	cfg := config.Config{
+		RegistryURL: mockReg.URL,
+		AuthMode:    "basic",
+		V2AuthMode:  "same",
+	}
+	srv := New(cfg, st)
+
+	handler := srv.withAuth(srv.newV2Proxy())
+
+	t.Run("read-only user gets 403 on PUT manifest", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPut, "/v2/testns/testrepo/manifests/v1", nil)
+		req.SetBasicAuth("roatest", "testpass")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("read-only user PUT manifest: expected 403, got %d. Body: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("read-write user is allowed on PUT manifest", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPut, "/v2/testns/testrepo/manifests/v1", nil)
+		req.SetBasicAuth("rwtest", "testpass")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		// Should NOT be 403 (read-write user has permission)
+		if rr.Code == http.StatusForbidden {
+			t.Errorf("read-write user PUT manifest: should not be 403. Body: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("read-only user is allowed on GET manifest", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v2/testns/testrepo/manifests/v1", nil)
+		req.SetBasicAuth("roatest", "testpass")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		// GET should pass read check and not check write
+		if rr.Code == http.StatusForbidden {
+			t.Errorf("read-only user GET manifest: should not be 403. Body: %s", rr.Body.String())
+		}
+	})
 }

@@ -39,24 +39,36 @@ func (s *Server) newV2Proxy() http.Handler {
 				// Check push_create_repo: per-repo table → global setting
 				// If push_create is disabled, only allow pushing to repos that already exist in DB
 				if !s.pushCreateAllowed(r.Context(), repoPath) {
-					if nsParts := strings.SplitN(repoPath, "/", 2); len(nsParts) == 2 {
-						if _, err := s.store.GetRepositoryByNamespacedName(r.Context(), nsParts[0], nsParts[1]); err != nil {
-							writeJSON(w, http.StatusForbidden, map[string]any{"error": "push_create disabled", "details": "repository not found in DB and push_create_repo is disabled"})
-							return
-						}
+					nsParts := strings.SplitN(repoPath, "/", 2)
+					nsName := ""
+					repoName := nsParts[0]
+					if len(nsParts) == 2 {
+						nsName = nsParts[0]
+						repoName = nsParts[1]
+					}
+					if _, err := s.store.GetRepositoryByNamespacedName(r.Context(), nsName, repoName); err != nil {
+						writeJSON(w, http.StatusForbidden, map[string]any{"error": "push_create disabled", "details": "repository not found in DB and push_create_repo is disabled"})
+						return
 					}
 				}
 				// Resolve protection mode: per-repo table → global setting → default 'rules'
 				protectionMode := s.resolveProtectionMode(r.Context(), repoPath)
 				if protectionMode != "overwrite" {
-					// Not allowed to overwrite, check immutable rules
-					forceImmutable := protectionMode == "immutable"
-					if ok, pattern := s.checkImmutableTag(r.Context(), repoPath, ref, forceImmutable); ok {
-						writeJSON(w, http.StatusConflict, map[string]any{
-							"error":   "immutable tag",
-							"details": fmt.Sprintf("tag '%s' matches immutable pattern '%s'", ref, pattern),
-						})
-						return
+					// Skip immutable check for digest pushes (content-addressable, no tag overwrite concept)
+					if !strings.HasPrefix(ref, "sha256:") {
+						// Only block overwrites of existing tags — first pushes always allowed
+						if _, _, err := s.client.Digest(r.Context(), repoPath, ref); err == nil {
+							// Tag exists, this is an overwrite — check immutable rules
+							forceImmutable := protectionMode == "immutable"
+							if ok, pattern := s.checkImmutableTag(r.Context(), repoPath, ref, forceImmutable); ok {
+								writeJSON(w, http.StatusConflict, map[string]any{
+									"error":   "immutable tag",
+									"details": fmt.Sprintf("tag '%s' matches immutable pattern '%s'", ref, pattern),
+								})
+								return
+							}
+						}
+						// HEAD failed: tag doesn't exist (first push) or network error — allow
 					}
 				}
 			}

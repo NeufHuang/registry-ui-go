@@ -217,6 +217,25 @@ func (s *Server) userCanAccessRepo(r *http.Request, repo string) bool {
 	return false
 }
 
+// userCanWriteRepo returns true if the current user can write to the given repo.
+// Admins can write to all repos. Non-admins need CanWrite on a matching namespace.
+func (s *Server) userCanWriteRepo(r *http.Request, repo string) bool {
+	u := s.GetCurrentUser(r)
+	if u == nil || u.IsAdmin {
+		return true
+	}
+	perms, err := s.store.ListUserPermissions(r.Context(), u.ID)
+	if err != nil || len(perms) == 0 {
+		return false
+	}
+	for _, p := range perms {
+		if p.CanWrite && (repo == p.NamespacePattern || strings.HasPrefix(repo, p.NamespacePattern+"/")) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractRepoNameFromPath lives in repo_path.go (shared with the /v2/
 // authorization path so both use identical repo-name parsing).
 
