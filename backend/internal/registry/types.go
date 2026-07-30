@@ -44,7 +44,24 @@ type RawManifest struct {
 	Payload     interface{}
 }
 
+// ErrorResponse is the legacy UI error shape used by /api/* endpoints:
+// {"error":"...","details":"..."}.
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Details string `json:"details,omitempty"`
+}
+
+// DistributionError follows the OCI Distribution Spec error envelope so the
+// Docker CLI can parse the error code instead of reporting "unknown".
+// Spec: https://github.com/opencontainers/distribution-spec/blob/main/spec.md#errors-2
+type DistributionError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Detail  any    `json:"detail,omitempty"`
+}
+
+// DistributionErrorResponse is the standard registry error body:
+// {"errors":[{"code":"UNAUTHORIZED","message":"..."}]}
+type DistributionErrorResponse struct {
+	Errors []DistributionError `json:"errors"`
 }

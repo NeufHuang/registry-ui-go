@@ -26,7 +26,7 @@ func (s *Server) newV2Proxy() http.Handler {
 			s.gcLock.RUnlock()
 			if running {
 				w.Header().Set("Retry-After", "30")
-				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "garbage collection in progress", "details": "push is temporarily unavailable; pull is unaffected"})
+				writeJSON(w, http.StatusServiceUnavailable, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "UNAVAILABLE", Message: "garbage collection in progress", Detail: "push is temporarily unavailable; pull is unaffected"}}})
 				return
 			}
 		}
@@ -47,7 +47,7 @@ func (s *Server) newV2Proxy() http.Handler {
 						repoName = nsParts[1]
 					}
 					if _, err := s.store.GetRepositoryByNamespacedName(r.Context(), nsName, repoName); err != nil {
-						writeJSON(w, http.StatusForbidden, map[string]any{"error": "push_create disabled", "details": "repository not found in DB and push_create_repo is disabled"})
+						writeJSON(w, http.StatusForbidden, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "DENIED", Message: "push_create disabled", Detail: "repository not found in DB and push_create_repo is disabled"}}})
 						return
 					}
 				}
@@ -61,10 +61,7 @@ func (s *Server) newV2Proxy() http.Handler {
 							// Tag exists, this is an overwrite — check immutable rules
 							forceImmutable := protectionMode == "immutable"
 							if ok, pattern := s.checkImmutableTag(r.Context(), repoPath, ref, forceImmutable); ok {
-								writeJSON(w, http.StatusConflict, map[string]any{
-									"error":   "immutable tag",
-									"details": fmt.Sprintf("tag '%s' matches immutable pattern '%s'", ref, pattern),
-								})
+							writeJSON(w, http.StatusConflict, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "DENIED", Message: fmt.Sprintf("tag '%s' matches immutable pattern '%s'", ref, pattern), Detail: "immutable tag"}}})
 								return
 							}
 						}

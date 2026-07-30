@@ -228,7 +228,13 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 						next.ServeHTTP(w, r)
 						return
 					}
-					// Allow /v2/ ping for repos whose manifests/blobs are anonymously accessible
+					// /v2/ ping must always return 200 for unauthenticated requests.
+					// This is required by the OCI Distribution Spec and expected by
+					// the Docker CLI. Anonymous pull is controlled on per-resource
+					// endpoints (manifests/blobs) via isAnonymousPullAllowed.
+					// Returning 401 here would cause the Docker CLI to abort with
+					// "no basic auth credentials" before even attempting anonymous
+					// access, due to how Docker handles Basic auth challenges.
 					if r.URL.Path == "/v2/" || r.URL.Path == "/v2" {
 						next.ServeHTTP(w, r)
 						return
@@ -240,13 +246,13 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				// After auth, enforce namespace authorization (skip /v2/ root and /v2/_catalog)
 				if repoPath := extractV2RepoPath(r.URL.Path); repoPath != "" {
 					if !s.userCanAccessRepo(r, repoPath) {
-						writeJSON(w, http.StatusForbidden, registry.ErrorResponse{Error: "forbidden", Details: "no permission to access this repository"})
+						writeJSON(w, http.StatusForbidden, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "DENIED", Message: "no permission to access this repository"}}})
 						return
 					}
 					// Check write permission for mutating V2 API requests (push, delete)
 					if r.Method == http.MethodPut || r.Method == http.MethodPost || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
 						if !s.userCanWriteRepo(r, repoPath) {
-							writeJSON(w, http.StatusForbidden, registry.ErrorResponse{Error: "forbidden", Details: "no write permission for this repository"})
+							writeJSON(w, http.StatusForbidden, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "DENIED", Message: "no write permission for this repository"}}})
 							return
 						}
 					}
@@ -278,10 +284,13 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 }
 
 func (s *Server) challenge(w http.ResponseWriter, r *http.Request) {
-	// Docker CLI expects 401 + WWW-Authenticate for /v2/ paths
+	// Docker CLI expects 401 + WWW-Authenticate for /v2/ paths, and parses the
+	// error code from the OCI Distribution Spec error envelope.
 	if strings.HasPrefix(r.URL.Path, "/v2/") {
 		w.Header().Set("WWW-Authenticate", `Basic realm="Registry UI"`)
-		writeJSON(w, http.StatusUnauthorized, registry.ErrorResponse{Error: "unauthorized"})
+		writeJSON(w, http.StatusUnauthorized, registry.DistributionErrorResponse{
+			Errors: []registry.DistributionError{{Code: "UNAUTHORIZED", Message: "authentication required"}},
+		})
 		return
 	}
 	// Browser requests redirect to login page
