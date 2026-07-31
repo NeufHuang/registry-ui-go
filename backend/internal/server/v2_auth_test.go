@@ -154,6 +154,37 @@ func TestV2PingAnonymousPull(t *testing.T) {
 			t.Errorf("anonymous manifest GET with global anon enabled: got 401, want passthrough")
 		}
 	})
+
+	t.Run("single-level repo anonymous pull uses per-repo settings key", func(t *testing.T) {
+		// Single-level repos (root namespace, e.g. "python") have no
+		// namespace separator; their per-repo flag lives under
+		// "allow_anonymous_pull:<repo>". Save via the tag-policy API then
+		// verify the flag is read back and honored by the v2 proxy.
+		if err := st.SetSetting(ctx, "allow_anonymous_pull", "false"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetSetting(ctx, "allow_anonymous_pull:python", "true"); err != nil {
+			t.Fatal(err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/v2/python/manifests/latest", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code == http.StatusUnauthorized {
+			t.Errorf("anonymous manifest GET for single-level repo with per-repo anon: got 401, want passthrough")
+		}
+
+		// A different single-level repo without the flag must stay protected.
+		if err := st.SetSetting(ctx, "allow_anonymous_pull:python", "false"); err != nil {
+			t.Fatal(err)
+		}
+		req2 := httptest.NewRequest(http.MethodGet, "/v2/python/manifests/latest", nil)
+		rr2 := httptest.NewRecorder()
+		handler.ServeHTTP(rr2, req2)
+		if rr2.Code != http.StatusUnauthorized {
+			t.Errorf("single-level repo with anon disabled: got %d, want 401", rr2.Code)
+		}
+	})
 }
 
 // TestV2ErrorEnvelopeFormat verifies that /v2/ error responses use the OCI

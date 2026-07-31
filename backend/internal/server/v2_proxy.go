@@ -61,7 +61,7 @@ func (s *Server) newV2Proxy() http.Handler {
 							// Tag exists, this is an overwrite — check immutable rules
 							forceImmutable := protectionMode == "immutable"
 							if ok, pattern := s.checkImmutableTag(r.Context(), repoPath, ref, forceImmutable); ok {
-							writeJSON(w, http.StatusConflict, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "DENIED", Message: fmt.Sprintf("tag '%s' matches immutable pattern '%s'", ref, pattern), Detail: "immutable tag"}}})
+								writeJSON(w, http.StatusConflict, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "DENIED", Message: fmt.Sprintf("tag '%s' matches immutable pattern '%s'", ref, pattern), Detail: "immutable tag"}}})
 								return
 							}
 						}
@@ -115,6 +115,19 @@ func (s *Server) newV2Proxy() http.Handler {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			// Strip forwarding headers before sending to the backend registry.
+			// The distribution registry inspects X-Forwarded-Proto (and
+			// X-Forwarded-Host/Port) when building the Location header for
+			// blob uploads. If these leak through from an external reverse
+			// proxy, the registry emits a Location pointing at itself using
+			// the *external* scheme (e.g. https://127.0.0.1:5000/...), which
+			// the Docker client cannot reach and which no longer matches the
+			// http:// internal prefix that ModifyResponse rewrites. Removing
+			// them here forces the registry to use its own (http) scheme so
+			// the Location rewrite below always matches.
+			req.Header.Del("X-Forwarded-Proto")
+			req.Header.Del("X-Forwarded-Host")
+			req.Header.Del("X-Forwarded-Port")
 			switch s.v2AuthMode() {
 			case "ui", "basic", "same":
 				// Prefer the client's own basic auth header (set by
@@ -198,10 +211,17 @@ func (s *Server) newV2Proxy() http.Handler {
 			if loc == "" {
 				return nil
 			}
-			internalPrefix := target.Scheme + "://" + target.Host
 			externalPrefix := externalScheme + "://" + externalHost
-			if strings.HasPrefix(loc, internalPrefix) {
-				resp.Header.Set("Location", externalPrefix+strings.TrimPrefix(loc, internalPrefix))
+			// Match the internal host under either scheme. The Director strips
+			// X-Forwarded-Proto so the registry normally emits an http://
+			// Location, but match https:// too as a defensive fallback in case
+			// a future registry version derives the scheme another way.
+			for _, scheme := range []string{"http", "https"} {
+				internalPrefix := scheme + "://" + target.Host
+				if strings.HasPrefix(loc, internalPrefix) {
+					resp.Header.Set("Location", externalPrefix+strings.TrimPrefix(loc, internalPrefix))
+					break
+				}
 			}
 			return nil
 		}

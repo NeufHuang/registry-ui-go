@@ -34,6 +34,7 @@ data/
 # Development artifacts
 plan.md
 registry-ui
+Dockerfile.local
 Dockerfile.runtime
 docker-compose.dual.yml
 docker-compose.runtime-dual.yml

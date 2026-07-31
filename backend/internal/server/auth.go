@@ -312,6 +312,13 @@ func (s *Server) isAnonymousPullAllowed(ctx context.Context, repo string) bool {
 			return allowed
 		}
 	}
+	// Single-level repos (root namespace, e.g. "python") have no namespace
+	// separator, so their per-repo flag lives in the settings table under
+	// the "allow_anonymous_pull:<repo>" key. Check it before falling back
+	// to the global default.
+	if v, err := s.store.GetSetting(ctx, "allow_anonymous_pull:"+repo); err == nil && v != "" {
+		return v == "true"
+	}
 	// Global default: anonymous pull is off by default.
 	return s.store.GetSettingBool(ctx, "allow_anonymous_pull", false)
 }

@@ -769,6 +769,10 @@ func (s *Server) pushCreateAllowed(ctx context.Context, repo string) bool {
 			return val == 1
 		}
 	}
+	// Single-level repos store their per-repo flag under "push_create_repo:<repo>".
+	if v, err := s.store.GetSetting(ctx, "push_create_repo:"+repo); err == nil && v != "" {
+		return v == "true"
+	}
 	// Global default: per the design specification push_create is enabled
 	// by default ("v != 'false'") so we pass true as the default.
 	return s.store.GetSettingBool(ctx, "push_create_repo", true)
@@ -796,6 +800,10 @@ func (s *Server) resolveProtectionMode(ctx context.Context, repo string) string 
 			return store.ProtectionCodeToString(code)
 		}
 	}
+	// Single-level repos store their per-repo flag under "protection_mode:<repo>".
+	if v, err := s.store.GetSetting(ctx, "protection_mode:"+repo); err == nil && v != "" {
+		return v
+	}
 	if v, _ := s.store.GetSetting(ctx, "protection_mode"); v != "" {
 		return v
 	}
@@ -811,6 +819,10 @@ func (s *Server) resolveOverwriteAction(ctx context.Context, repo string) string
 		if code, err := s.store.GetRepoOverwriteAction(ctx, parts[0], parts[1]); err == nil && code >= 0 {
 			return store.OverwriteCodeToString(code)
 		}
+	}
+	// Single-level repos store their per-repo flag under "overwrite_action:<repo>".
+	if v, err := s.store.GetSetting(ctx, "overwrite_action:"+repo); err == nil && v != "" {
+		return v
 	}
 	if v, _ := s.store.GetSetting(ctx, "overwrite_action"); v != "" {
 		return v
