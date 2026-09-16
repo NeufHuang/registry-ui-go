@@ -264,12 +264,18 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					return
 				}
 			}
+			if !s.enforcePasswordChange(w, r) {
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Check API token first (Bearer token)
 		if s.checkAPITokenAuth(w, r) {
+			if !s.enforcePasswordChange(w, r) {
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -278,9 +284,40 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		if !s.requireUIAuth(w, r) {
 			return
 		}
+		if !s.enforcePasswordChange(w, r) {
+			return
+		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// mustChangePasswordExempt lists the only endpoints a user with a pending
+// forced password change may call. Everything else returns 403 until the
+// password is rotated, as promised by docs/API.md section 5.
+func mustChangePasswordExempt(path string) bool {
+	switch path {
+	case "/api/login", "/api/logout", "/api/user", "/api/me", "/api/user/password":
+		return true
+	}
+	return false
+}
+
+// enforcePasswordChange rejects requests from a user whose default password
+// has not been rotated. Returns false (and writes the response) when blocked.
+func (s *Server) enforcePasswordChange(w http.ResponseWriter, r *http.Request) bool {
+	u := s.GetCurrentUser(r)
+	if u == nil || !u.MustChangePassword {
+		return true
+	}
+	if mustChangePasswordExempt(r.URL.Path) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error":   "password_change_required",
+		"details": "the default password must be changed before using other endpoints",
+	})
+	return false
 }
 
 func (s *Server) challenge(w http.ResponseWriter, r *http.Request) {
@@ -431,6 +468,14 @@ func (s *Server) requireCSRF(next http.Handler) http.Handler {
 		}
 		// Skip CSRF for login and v2 proxy
 		if r.URL.Path == "/api/login" || strings.HasPrefix(r.URL.Path, "/v2/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Bearer API tokens are not ambient credentials: a cross-site request
+		// cannot attach an Authorization header, so CSRF does not apply. Without
+		// this exemption the documented "use a Bearer token to call any API"
+		// was impossible for POST/PUT/DELETE.
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 			next.ServeHTTP(w, r)
 			return
 		}

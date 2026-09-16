@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -21,10 +20,7 @@ func (s *Server) newV2Proxy() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// During GC, block push/write requests but allow pull/read
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			s.gcLock.RLock()
-			running := s.gcRunning
-			s.gcLock.RUnlock()
-			if running {
+			if s.gcRunning.Load() {
 				w.Header().Set("Retry-After", "30")
 				writeJSON(w, http.StatusServiceUnavailable, registry.DistributionErrorResponse{Errors: []registry.DistributionError{{Code: "UNAVAILABLE", Message: "garbage collection in progress", Detail: "push is temporarily unavailable; pull is unaffected"}}})
 				return
@@ -95,9 +91,9 @@ func (s *Server) newV2Proxy() http.Handler {
 				}
 			}
 		}
-		target, err := url.Parse(strings.TrimRight(s.cfg.RegistryURL, "/"))
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		target := s.registryTarget
+		if target == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "registry target is not configured"})
 			return
 		}
 		externalHost := r.Host

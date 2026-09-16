@@ -46,17 +46,51 @@ async function api(path, options = {}) {
     const token = getCSRFToken();
     if (token) headers['X-CSRF-Token'] = token;
   }
-  const res = await fetch(path, { headers, ...options });
+  // Merge caller-supplied headers instead of letting them replace the ones
+  // above (spreading options after `headers` used to drop CSRF/Content-Type).
+  const res = await fetch(path, {...options, headers: {...headers, ...(options.headers || {})}});
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
-    const code = data && typeof data === 'object' ? data.code : null;
+    // `code` is the machine-readable identifier. Responses like
+    // {"error":"gc_expired"} carry it in `error`, so accept both.
+    const rawCode = data && typeof data === 'object' ? (data.code || data.error) : null;
+    const code = typeof rawCode === 'string' && /^[a-z][a-z0-9_]*$/i.test(rawCode) ? rawCode : null;
     const err = new Error((code && t(code) !== code ? t(code) : null) || data?.details || data?.error || text || `${res.status} ${res.statusText}`);
-    err.code = code || null;
+    err.code = code;
+    err.status = res.status;
     throw err;
   }
   return { data, headers: res.headers, status: res.status };
+}
+
+// authDisabled reports whether the deployment runs with AUTH_MODE=off: the
+// server then returns an empty username and every action is allowed.
+function authDisabled() { return !(state.user && state.user.username); }
+function isAdminUser() { return authDisabled() || !!state.user.isAdmin; }
+function namespaceMatches(pattern, repo) { return repo === pattern || repo.startsWith(pattern + '/'); }
+function canReadRepo(repo) {
+  if (isAdminUser()) return true;
+  return (state.permissions || []).some(p => p.canRead && namespaceMatches(p.namespacePattern, repo));
+}
+function canWriteRepo(repo) {
+  if (isAdminUser()) return true;
+  return (state.permissions || []).some(p => p.canWrite && namespaceMatches(p.namespacePattern, repo));
+}
+function canWriteNamespace(ns) {
+  if (isAdminUser()) return true;
+  return (state.permissions || []).some(p => p.canWrite && namespaceMatches(p.namespacePattern, ns));
+}
+// applyPermissionsUI hides controls an authenticated non-admin cannot use, so
+// the UI does not offer actions the server will reject with 403.
+function applyPermissionsUI() {
+  const restricted = !authDisabled() && !state.user.isAdmin;
+  const adminOnly = ['exportBtn', 'runManualGC'];
+  for (const id of adminOnly) {
+    const node = el(id);
+    if (node) node.style.display = restricted ? 'none' : '';
+  }
 }
 
 function applyI18n() {
@@ -108,14 +142,17 @@ function applyUser() {
 async function loadUser() {
   const {data} = await api('/api/user');
   state.user = {...state.user, ...data};
+  applyUser();
+  // Depends only on identity, so it is applied before the possible early return.
+  applyPermissionsUI();
+  if (data.mustChangePassword) {
+    toast(t('mustChangePassword'), true, true);
+    return;
+  }
   if (!data.isAdmin) {
     try { const {data: perms} = await api('/api/my-permissions'); state.permissions = perms || []; } catch { state.permissions = []; }
   } else {
     state.permissions = [];
-  }
-  applyUser();
-  if (data.mustChangePassword) {
-    toast(t('mustChangePassword'), true, true);
   }
 }
 function toast(msg, err=false, keep=false) { const b = el('toast'); b.textContent = msg; b.className = `toast ${err ? 'err' : ''}`; clearTimeout(window.__toastTimer); if (!keep) window.__toastTimer = setTimeout(() => b.classList.add('hidden'), 4500); }

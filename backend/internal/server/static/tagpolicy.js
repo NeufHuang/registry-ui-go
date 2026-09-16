@@ -78,7 +78,10 @@ el('retentionPreviewBtn').onclick = async () => {
 };
 el('refreshReposBtn').onclick = async () => { try { await loadRepos(true); } catch(e) { toast(e.message, true); } };
 el('deleteSelectedReposBtn').onclick = async () => {
-  const checked = [...state.selectedRepos];
+  const all = [...state.selectedRepos];
+  // Skip repos the user cannot write to instead of aborting the whole batch.
+  const checked = all.filter(canWriteRepo);
+  if (all.length > 0 && checked.length === 0) { toast(t('noPermission'), true); return; }
   if (checked.length > 0) {
     const ok = await openDeleteConfirm({
       title: t('deleteConfirmTitle'),
@@ -108,6 +111,7 @@ el('deleteSelectedReposBtn').onclick = async () => {
 el('createRepoBtn').onclick = async () => {
   const ns = el('namespaceFilter').value || (state.selectedRepo ? namespaceOf(state.selectedRepo) : '');
   if (!ns || ns === t('root')) { toast(t('noRepoSelected'), true); return; }
+  if (!canWriteNamespace(ns)) { toast(t('noPermission'), true); return; }
   const ok = await openFormDialog({
     title: t('createRepo'),
     message: ns + '/',
@@ -123,6 +127,7 @@ el('createRepoBtn').onclick = async () => {
   if (ok) await loadRepos(true);
 };
 el('createNamespaceBtn').onclick = async () => {
+  if (!isAdminUser()) { toast(t('noPermission'), true); return; }
   const ok = await openFormDialog({
     title: t('createNamespace'),
     fields: [{key: 'name', label: t('createNamespace'), placeholder: 'myteam'}],
@@ -147,7 +152,7 @@ el('repoSearch').oninput = renderRepos; el('namespaceFilter').onchange = () => {
 el('deleteSelectedTagsBtn').onclick = async () => { try { await deleteTags([...state.selectedTags]); } catch(e) { toast(e.message, true); } };
 el('favoriteBtn').onclick = async () => { try { await favoriteCurrent(); } catch(e) { toast(e.message, true); } };
 el('recentRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecent(); }; el('favoritesRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadFavorites(); }; el('auditRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadAudit(); }; el('recycleRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecycle(); };
-(async()=>{ try { await loadSettings(); await loadUser(); await checkHealth(); await loadRepos(true); await refreshSidebars(); } catch(e) { toast(e.message, true); } })();
+(async()=>{ try { await loadUser(); if (state.user && state.user.mustChangePassword) { showModal('profileModal'); toast(t('mustChangePassword'), true, true); return; } await loadSettings(); await checkHealth(); await loadRepos(true); await refreshSidebars(); } catch(e) { toast(e.message, true); } })();
 
 // File upload button click handlers (moved from DOMContentLoaded for module script compatibility)
 document.getElementById('settingLogoFileBtn')?.addEventListener('click', (e) => { e.preventDefault(); document.getElementById('settingLogoFile').click(); });

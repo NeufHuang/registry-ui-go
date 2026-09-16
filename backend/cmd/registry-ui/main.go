@@ -31,6 +31,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("open sqlite: %v", err)
 	}
+	// Note: on the execSelf() restart path syscall.Exec replaces the process
+	// image without unwinding the stack, so this deferred Close never runs.
+	// That is harmless on Linux (the kernel reclaims the fds on exec), but it
+	// is the reason the restart path cannot rely on deferred cleanup.
 	defer st.Close()
 
 	srv := server.New(cfg, st)
@@ -45,6 +49,11 @@ func main() {
 		Addr:              cfg.ServerAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: server.DefaultReadHeaderTimeout,
+		// IdleTimeout is safe for the streaming /v2/ proxy (it only bounds how
+		// long a *keep-alive* connection may sit idle). ReadTimeout/
+		// WriteTimeout are deliberately left unset: they would cap large blob
+		// pushes and pulls.
+		IdleTimeout: 2 * time.Minute,
 	}
 
 	// One-shot startup sync: pull catalog + tags + digest from the registry
@@ -128,22 +137,20 @@ func startBackgroundGC(srv *server.Server) {
 }
 
 func runGC(srv *server.Server) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// One detached, time-bounded context for the whole cycle (metadata sweep
+	// plus blob garbage-collect) so the push gate stays closed until both
+	// phases are done.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	deleted, err := srv.RunRegistryGC(ctx, false)
-	if err != nil {
-		log.Printf("background GC failed: %v", err)
+	res := srv.RunGC(ctx, false)
+	if res.MetadataError != "" {
+		log.Printf("background GC metadata phase failed: %s", res.MetadataError)
 	} else {
-		log.Printf("background GC completed: deleted %d items", deleted)
+		log.Printf("background GC completed: deleted %d items (skipped=%t)", res.MetadataDeleted, res.Skipped)
 	}
-	// Run blob GC to reclaim storage
-	blobCtx, blobCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer blobCancel()
-	blobDeleted, freed, err := srv.RunBlobGC(blobCtx)
-	if err != nil {
-		log.Printf("background blob GC failed: %v", err)
+	if res.BlobError != "" {
+		log.Printf("background blob GC failed: %s", res.BlobError)
 	} else {
-		log.Printf("background blob GC completed: deleted %d blobs, freed %d bytes", blobDeleted, freed)
+		log.Printf("background blob GC completed: deleted %d blobs, freed %d bytes", res.BlobDeleted, res.FreedBytes)
 	}
 }
-

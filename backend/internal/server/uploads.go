@@ -35,7 +35,9 @@ func (s *Server) handleAvatarUpload(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_ = s.store.SetSetting(r.Context(), "userAvatar", url)
+	// Per-user key: an uploaded avatar must not become the avatar of every
+	// account on the instance.
+	_ = s.store.SetSetting(r.Context(), avatarSettingKey(s.currentUsername(r)), url)
 	writeJSON(w, http.StatusCreated, map[string]any{"url": url, "contentType": contentType})
 }
 

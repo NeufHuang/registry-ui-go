@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,40 @@ import (
 
 	"github.com/neuf/registry-ui/backend/internal/config"
 )
+
+// StatusError is returned when the registry answers with a non-2xx status.
+// It lets callers distinguish e.g. 404 (already gone) from transient
+// failures without pattern-matching on the error string.
+type StatusError struct {
+	Op     string
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s: status=%d body=%s", e.Op, e.Status, truncate([]byte(e.Body)))
+}
+
+// IsStatus reports whether err (or anything it wraps) is a *StatusError
+// with the given HTTP status code.
+func IsStatus(err error, status int) bool {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status == status
+	}
+	return false
+}
+
+// StatusCode returns the HTTP status carried by err, if the registry actually
+// answered. A missing status means the failure was a transport/timeout error
+// rather than a registry-side rejection.
+func StatusCode(err error) (int, bool) {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status, true
+	}
+	return 0, false
+}
 
 const ManifestAccept = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.v1+json"
 
@@ -54,7 +89,7 @@ func (c *Client) Catalog(ctx context.Context, n, last string) (CatalogResponse, 
 		return CatalogResponse{}, err
 	}
 	if status < 200 || status >= 300 {
-		return CatalogResponse{}, fmt.Errorf("registry catalog failed: status=%d body=%s", status, truncate(body))
+		return CatalogResponse{}, &StatusError{Op: "registry catalog failed", Status: status, Body: string(body)}
 	}
 	var out CatalogResponse
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -71,7 +106,7 @@ func (c *Client) Tags(ctx context.Context, name string) (TagsResponse, error) {
 		return TagsResponse{}, err
 	}
 	if status < 200 || status >= 300 {
-		return TagsResponse{}, fmt.Errorf("registry tags failed: status=%d body=%s", status, truncate(body))
+		return TagsResponse{}, &StatusError{Op: "registry tags failed", Status: status, Body: string(body)}
 	}
 	var out TagsResponse
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -97,7 +132,7 @@ func (c *Client) ManifestRaw(ctx context.Context, name, ref string) (RawManifest
 		return RawManifest{}, err
 	}
 	if status < 200 || status >= 300 {
-		return RawManifest{}, fmt.Errorf("registry manifest failed: status=%d body=%s", status, truncate(body))
+		return RawManifest{}, &StatusError{Op: "registry manifest failed", Status: status, Body: string(body)}
 	}
 	var payload interface{}
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -114,7 +149,7 @@ func (c *Client) Digest(ctx context.Context, name, ref string) (string, string, 
 		return "", "", err
 	}
 	if status < 200 || status >= 300 {
-		return "", "", fmt.Errorf("registry digest lookup failed: status=%d body=%s", status, truncate(body))
+		return "", "", &StatusError{Op: "registry digest lookup failed", Status: status, Body: string(body)}
 	}
 	return header.Get("Docker-Content-Digest"), header.Get("Content-Type"), nil
 }
@@ -128,7 +163,7 @@ func (c *Client) DeleteManifest(ctx context.Context, name, digest string) error 
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("registry delete failed: status=%d body=%s", status, truncate(body))
+		return &StatusError{Op: "registry delete failed", Status: status, Body: string(body)}
 	}
 	return nil
 }
@@ -139,7 +174,7 @@ func (c *Client) Blob(ctx context.Context, name, digest string) ([]byte, string,
 		return nil, "", err
 	}
 	if status < 200 || status >= 300 {
-		return nil, "", fmt.Errorf("registry blob fetch failed: status=%d body=%s", status, truncate(body))
+		return nil, "", &StatusError{Op: "registry blob fetch failed", Status: status, Body: string(body)}
 	}
 	return body, header.Get("Content-Type"), nil
 }
@@ -153,10 +188,15 @@ func (c *Client) PutManifest(ctx context.Context, name, ref, contentType string,
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("registry manifest restore failed: status=%d body=%s", status, truncate(respBody))
+		return &StatusError{Op: "registry manifest restore failed", Status: status, Body: string(respBody)}
 	}
 	return nil
 }
+
+// maxResponseBytes bounds how much of a registry response is buffered in
+// memory. Manifest and image-config payloads are small; without a cap a
+// misbehaving upstream could exhaust memory in a single request.
+const maxResponseBytes = 64 << 20
 
 func (c *Client) do(ctx context.Context, method, path, accept string, body io.Reader) (int, http.Header, []byte, error) {
 	if c.cfg.RegistryURL == "" {
@@ -179,7 +219,13 @@ func (c *Client) do(ctx context.Context, method, path, accept string, body io.Re
 		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("%s %s: read response: %w", method, path, err)
+	}
+	if int64(len(data)) > maxResponseBytes {
+		return 0, nil, nil, fmt.Errorf("%s %s: response exceeds %d bytes", method, path, maxResponseBytes)
+	}
 	return resp.StatusCode, resp.Header.Clone(), data, nil
 }
 

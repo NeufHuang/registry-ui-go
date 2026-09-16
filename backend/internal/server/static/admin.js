@@ -393,6 +393,7 @@ async function loadStats() {
 // ---- Export ----
 
 el('exportBtn').onclick = async () => {
+  if (!isAdminUser()) { toast(t('noPermission'), true); return; }
   const ok = await openFormDialog({
     title: t('exportTitle'),
     fields: [{

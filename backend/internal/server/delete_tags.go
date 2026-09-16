@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/neuf/registry-ui/backend/internal/registry"
 )
 
 // tagDeleteResult describes the outcome of removing a single tag.
@@ -12,6 +14,9 @@ type tagDeleteResult struct {
 	Action string `json:"action"` // "delete" (digest removed) or "untag" (siblings remain)
 	Ok     bool   `json:"ok"`
 	Error  string `json:"error,omitempty"`
+	// Warning reports partial success: the requested tag was removed, but
+	// collateral work (re-pushing surviving tags) failed and needs attention.
+	Warning string `json:"warning,omitempty"`
 }
 
 // deleteTagsAware removes the selected tags with proper tag semantics.
@@ -119,7 +124,7 @@ func (s *Server) deleteTagsAware(r *http.Request, name string, selectedTags []st
 				results = append(results, tagDeleteResult{Tag: tg, Action: "delete", Ok: true})
 			}
 			// Clean up DB record if no tags remain (or repo already gone from registry).
-			if tagsResp, err := client.Tags(ctx, name); (err == nil && len(tagsResp.Tags) == 0) || (err != nil && strings.Contains(err.Error(), "status=404")) {
+			if tagsResp, err := client.Tags(ctx, name); (err == nil && len(tagsResp.Tags) == 0) || (err != nil && registry.IsStatus(err, http.StatusNotFound)) {
 				s.cleanupRepoDB(ctx, name)
 			}
 			continue
@@ -145,20 +150,29 @@ func (s *Server) deleteTagsAware(r *http.Request, name string, selectedTags []st
 			continue
 		}
 		// Re-push the manifest under each surviving tag. Failures here are
-		// serious (the surviving tag is gone), so they are logged and
-		// surfaced; the manifest body is still held in memory for retry.
+		// serious (the surviving tag is gone), so they are logged, surfaced as
+		// a warning on the result, and audited — reporting a bare Ok:true used
+		// to hide silently lost tags.
+		var repushFailed []string
 		for _, tg := range remaining {
 			if err := client.PutManifest(ctx, name, tg, raw.ContentType, raw.Body); err != nil {
 				log.Printf("untag re-push failed repo=%s tag=%s digest=%s: %v", name, tg, digest, err)
+				repushFailed = append(repushFailed, tg)
 				_ = s.store.AddAudit(ctx, s.currentUserID(r), "untag", name, tg, digest, "error", "re-push of surviving tag failed: "+err.Error())
 			}
+		}
+		warning := ""
+		if len(repushFailed) > 0 {
+			warning = "surviving tags could not be re-pushed and may be lost: " + strings.Join(repushFailed, ", ")
 		}
 		for _, tg := range removeTags {
 			if rid > 0 {
 				_ = s.store.SoftDeleteImage(ctx, rid, tg)
 			}
-			_ = s.store.AddAudit(ctx, s.currentUserID(r), "untag", name, tg, digest, "ok", "tag removed; digest retained for remaining tags")
-			results = append(results, tagDeleteResult{Tag: tg, Action: "untag", Ok: true})
+			if warning == "" {
+				_ = s.store.AddAudit(ctx, s.currentUserID(r), "untag", name, tg, digest, "ok", "tag removed; digest retained for remaining tags")
+			}
+			results = append(results, tagDeleteResult{Tag: tg, Action: "untag", Ok: true, Warning: warning})
 		}
 		s.fireWebhookEvent("untag", name, removeTags[0], digest)
 	}

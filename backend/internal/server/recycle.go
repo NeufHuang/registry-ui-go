@@ -53,6 +53,16 @@ func (s *Server) handleRecycleByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, err)
 			return
 		}
+		if !s.userCanAccessRepo(r, item.Repo) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no permission to access this repository"})
+			return
+		}
+		// Discarding a recycle record throws away the last recoverable copy of
+		// the manifest, so it needs write access.
+		if !s.userCanWriteRepo(r, item.Repo) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no write permission for this repository"})
+			return
+		}
 		if err := s.store.DeleteRecycleItem(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -70,6 +80,15 @@ func (s *Server) handleRecycleByID(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.GetRecycleItem(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if !s.userCanAccessRepo(r, item.Repo) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no permission to access this repository"})
+		return
+	}
+	// Restore re-pushes the manifest into the registry, so it is a write.
+	if !s.userCanWriteRepo(r, item.Repo) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no write permission for this repository"})
 		return
 	}
 	if item.Status != "pending_gc" {

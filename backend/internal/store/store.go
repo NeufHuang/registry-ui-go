@@ -143,6 +143,43 @@ type Namespace struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// numericSettingBounds caps known numeric settings at the write boundary so a
+// bad value submitted through PUT /api/settings can never invert GC or
+// retention semantics (e.g. a negative recycleGCDays used to produce a
+// future-dated datetime modifier). Keeping the rule here makes SetSetting the
+// single source of truth instead of every call site re-clamping.
+var numericSettingBounds = map[string]struct{ Min, Max int }{
+	"recycleGCDays":        {0, 3650},
+	"pageSize":             {1, 1000},
+	"retention_keep_count": {0, 100000},
+}
+
+// InvalidSettingError reports a setting value rejected by validation.
+type InvalidSettingError struct {
+	Key    string
+	Value  string
+	Reason string
+}
+
+func (e *InvalidSettingError) Error() string {
+	return fmt.Sprintf("invalid value for setting %q: %s", e.Key, e.Reason)
+}
+
+func validateSettingValue(key, value string) error {
+	bounds, ok := numericSettingBounds[key]
+	if !ok {
+		return nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return &InvalidSettingError{Key: key, Value: value, Reason: "must be an integer"}
+	}
+	if n < bounds.Min || n > bounds.Max {
+		return &InvalidSettingError{Key: key, Value: value, Reason: fmt.Sprintf("must be between %d and %d", bounds.Min, bounds.Max)}
+	}
+	return nil
+}
+
 // Per-repo protection/overwrite codes stored in repositories table.
 // -1 = unset (fall back to global setting / hardcoded default), >=0 = explicit value.
 const (
@@ -273,13 +310,35 @@ type RecycleItem struct {
 	Size         int64     `json:"size,omitempty"`
 	DeletedAt    time.Time `json:"deletedAt"`
 	RestoredAt   string    `json:"restoredAt,omitempty"`
+	Attempts     int       `json:"attempts,omitempty"`
+	LastError    string    `json:"lastError,omitempty"`
+}
+
+// sqlitePragmaParams are pushed through the DSN so the driver applies them to
+// *every* pooled connection. Running `PRAGMA busy_timeout` / `foreign_keys`
+// once after sql.Open only configured the single connection that executed it:
+// with SetMaxOpenConns(4) the other connections kept busy_timeout=0 (instant
+// SQLITE_BUSY on concurrent writes) and foreign_keys=0 (ON DELETE CASCADE /
+// SET NULL silently not enforced). journal_mode is deliberately absent here
+// because WAL is a persistent property of the database file, already set in
+// migrate; re-applying it on every new connection can fail with SQLITE_BUSY
+// while another connection holds a read transaction.
+const sqlitePragmaParams = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+
+// sqliteDSN appends the per-connection pragmas to a sqlite DSN, handling both
+// the plain-path and file: URI forms.
+func sqliteDSN(path string) string {
+	if strings.Contains(path, "?") {
+		return path + "&" + sqlitePragmaParams
+	}
+	return path + "?" + sqlitePragmaParams
 }
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, err
 	}
@@ -360,6 +419,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			manifest_body BLOB NOT NULL,
 			status TEXT NOT NULL DEFAULT 'pending_gc',
 			size INTEGER NOT NULL DEFAULT 0,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
 			deleted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			restored_at DATETIME DEFAULT NULL,
 			UNIQUE(repo, reference, digest)
@@ -452,6 +513,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE audit_logs ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE recycle_bin ADD COLUMN image_id INTEGER REFERENCES images(id) ON DELETE SET NULL`,
 		`ALTER TABLE recycle_bin ADD COLUMN size INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE recycle_bin ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE recycle_bin ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE recent ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id, created_at DESC)`,
@@ -528,10 +591,13 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := conn.ExecContext(ctx, `UPDATE repositories SET overwrite_action = CASE (SELECT value FROM settings WHERE key='overwrite_action:' || (SELECT n.name FROM namespaces n WHERE n.id=namespace_id) || '/' || name) WHEN 'keep' THEN 1 WHEN 'recycle' THEN 0 ELSE -1 END WHERE overwrite_action = -1 AND (SELECT n.name FROM namespaces n WHERE n.id=namespace_id) || '/' || name IN (SELECT REPLACE(key, 'overwrite_action:', '') FROM settings WHERE key LIKE 'overwrite_action:%')`); err != nil {
 		log.Printf("migration: transfer overwrite_action from settings failed: %v", err)
 	}
-	// Cleanup: remove all per-repo legacy settings keys now that their data
-	// lives in repositories table columns. Global default keys (no ':'
-	// suffix) are preserved.
-	if _, err := conn.ExecContext(ctx, `DELETE FROM settings WHERE key LIKE 'allow_anonymous_pull:%' OR key LIKE 'overwrite_action:%' OR key LIKE 'protection_mode:%' OR key LIKE 'push_create_repo:%' OR key LIKE 'retention_keep_count:%' OR key LIKE 'allow_overwrite:%' OR key LIKE 'immutable_repo:%'`); err != nil {
+	// Cleanup: remove per-repo legacy settings keys now that their data lives
+	// in repositories table columns. Only namespaced keys (containing a '/')
+	// are removed: single-segment repos (root namespace, e.g. "alpine") have
+	// no repositories lookup in the tag-policy API and legitimately store
+	// their override under "<key>:<repo>". Global default keys (no ':') are
+	// preserved. This used to wipe single-segment overrides on every restart.
+	if _, err := conn.ExecContext(ctx, `DELETE FROM settings WHERE key LIKE 'allow_anonymous_pull:%/%' OR key LIKE 'overwrite_action:%/%' OR key LIKE 'protection_mode:%/%' OR key LIKE 'push_create_repo:%/%' OR key LIKE 'retention_keep_count:%/%' OR key LIKE 'allow_overwrite:%' OR key LIKE 'immutable_repo:%'`); err != nil {
 		log.Printf("migration: cleanup per-repo legacy settings failed: %v", err)
 	}
 	var regCount int
@@ -594,11 +660,13 @@ func (s *Store) recycleAndRebuild(ctx context.Context, conn *sql.Conn) error {
 				status TEXT NOT NULL DEFAULT 'pending_gc',
 				image_id INTEGER REFERENCES images(id) ON DELETE SET NULL,
 				size INTEGER NOT NULL DEFAULT 0,
+				attempts INTEGER NOT NULL DEFAULT 0,
+				last_error TEXT NOT NULL DEFAULT '',
 				deleted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				restored_at DATETIME DEFAULT NULL,
 				UNIQUE(repo, reference, digest)
 			)`,
-			copySQL: `INSERT INTO recycle_bin_new(id,repo,reference,digest,content_type,manifest_body,status,image_id,deleted_at,restored_at) SELECT id,repo,reference,digest,content_type,manifest_body,status,image_id,deleted_at,restored_at FROM recycle_bin`,
+			copySQL: `INSERT INTO recycle_bin_new(id,repo,reference,digest,content_type,manifest_body,status,image_id,size,attempts,last_error,deleted_at,restored_at) SELECT id,repo,reference,digest,content_type,manifest_body,status,image_id,size,COALESCE(attempts,0),COALESCE(last_error,''),deleted_at,restored_at FROM recycle_bin`,
 		},
 		{
 			name:      "repo_descriptions",
@@ -781,6 +849,9 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 		s.cache.Delete(key)
 		return nil
 	}
+	if err := validateSettingValue(key, value); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	if err != nil {
 		return err
@@ -903,9 +974,27 @@ func (s *Store) GetNamespaceByID(ctx context.Context, id int64) (Namespace, erro
 	return ns, err
 }
 
+// DeleteNamespace removes a namespace together with its repositories and their
+// images. repositories.namespace_id has no ON DELETE CASCADE, so deleting the
+// namespace row alone used to leave orphaned repository rows behind; those then
+// disappeared from the repository list (the JOIN drops them) while still
+// occupying their UNIQUE(namespace_id, name) slot.
 func (s *Store) DeleteNamespace(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM namespaces WHERE id=?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM images WHERE repository_id IN (SELECT id FROM repositories WHERE namespace_id=?)`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM repositories WHERE namespace_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM namespaces WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetRepositoryAnonymousPull sets the anonymous_pull flag for a repository
@@ -1345,9 +1434,9 @@ func (s *Store) ListRecycleItems(ctx context.Context, includeRestored bool, limi
 	}
 	where := `1=1`
 	if !includeRestored {
-		where += ` AND status IN ('pending_gc','gc_expired')`
+		where += ` AND status IN ('pending_gc','gc_expired','gc_failed')`
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,repo,reference,digest,content_type,status,image_id,deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE `+where+` ORDER BY deleted_at DESC,id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,repo,reference,digest,content_type,status,image_id,size,COALESCE(attempts,0),COALESCE(last_error,''),deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE `+where+` ORDER BY deleted_at DESC,id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1356,7 +1445,7 @@ func (s *Store) ListRecycleItems(ctx context.Context, includeRestored bool, limi
 	for rows.Next() {
 		var item RecycleItem
 		var imageID sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.Repo, &item.Reference, &item.Digest, &item.ContentType, &item.Status, &imageID, &item.DeletedAt, &item.RestoredAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Repo, &item.Reference, &item.Digest, &item.ContentType, &item.Status, &imageID, &item.Size, &item.Attempts, &item.LastError, &item.DeletedAt, &item.RestoredAt); err != nil {
 			return nil, err
 		}
 		if imageID.Valid {
@@ -1370,7 +1459,7 @@ func (s *Store) ListRecycleItems(ctx context.Context, includeRestored bool, limi
 func (s *Store) GetRecycleItem(ctx context.Context, id int64) (RecycleItem, error) {
 	var item RecycleItem
 	var imageID sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id,repo,reference,digest,content_type,manifest_body,status,image_id,deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE id=?`, id).Scan(&item.ID, &item.Repo, &item.Reference, &item.Digest, &item.ContentType, &item.ManifestBody, &item.Status, &imageID, &item.DeletedAt, &item.RestoredAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,repo,reference,digest,content_type,manifest_body,status,image_id,size,COALESCE(attempts,0),COALESCE(last_error,''),deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE id=?`, id).Scan(&item.ID, &item.Repo, &item.Reference, &item.Digest, &item.ContentType, &item.ManifestBody, &item.Status, &imageID, &item.Size, &item.Attempts, &item.LastError, &item.DeletedAt, &item.RestoredAt)
 	if imageID.Valid {
 		item.ImageID = &imageID.Int64
 	}
@@ -1392,19 +1481,27 @@ func (s *Store) MarkRecycleGCExpired(ctx context.Context, id int64) error {
 	return err
 }
 
-// ListPendingGC returns recycle_bin items with status='pending_gc'.
-// When days > 0, only items older than N days are returned.
-// When days <= 0, all pending items are returned.
+// ListPendingGC returns recycle_bin items with status='pending_gc' that are
+// older than the given number of days. The retention window is explicit: a
+// non-positive value is rejected instead of being silently interpreted as
+// "everything", so callers can never widen the GC scope by passing 0.
 func (s *Store) ListPendingGC(ctx context.Context, days int) ([]RecycleItem, error) {
-	var query string
-	var args []any
-	if days > 0 {
-		modifier := fmt.Sprintf("-%d days", days)
-		query = `SELECT id,repo,reference,digest,content_type,status,image_id,deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE status='pending_gc' AND deleted_at < datetime('now', ?) ORDER BY deleted_at ASC`
-		args = append(args, modifier)
-	} else {
-		query = `SELECT id,repo,reference,digest,content_type,status,image_id,deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE status='pending_gc' ORDER BY deleted_at ASC`
+	if days <= 0 {
+		return nil, fmt.Errorf("retention days must be > 0, got %d", days)
 	}
+	modifier := fmt.Sprintf("-%d days", days)
+	return s.listPendingGC(ctx, `AND deleted_at < datetime('now', ?)`, modifier)
+}
+
+// ListAllPendingGC returns every pending_gc item regardless of age. It is
+// used only by the explicit "purge recycle bin" action, never by the
+// retention-based (automatic or manual) GC path.
+func (s *Store) ListAllPendingGC(ctx context.Context) ([]RecycleItem, error) {
+	return s.listPendingGC(ctx, "", nil)
+}
+
+func (s *Store) listPendingGC(ctx context.Context, extraWhere string, args ...any) ([]RecycleItem, error) {
+	query := `SELECT id,repo,reference,digest,content_type,status,image_id,size,COALESCE(attempts,0),COALESCE(last_error,''),deleted_at,COALESCE(restored_at,'') FROM recycle_bin WHERE status='pending_gc' ` + extraWhere + ` ORDER BY deleted_at ASC`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1414,7 +1511,7 @@ func (s *Store) ListPendingGC(ctx context.Context, days int) ([]RecycleItem, err
 	for rows.Next() {
 		var item RecycleItem
 		var imageID sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.Repo, &item.Reference, &item.Digest, &item.ContentType, &item.Status, &imageID, &item.DeletedAt, &item.RestoredAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Repo, &item.Reference, &item.Digest, &item.ContentType, &item.Status, &imageID, &item.Size, &item.Attempts, &item.LastError, &item.DeletedAt, &item.RestoredAt); err != nil {
 			return nil, err
 		}
 		if imageID.Valid {
@@ -1552,9 +1649,17 @@ func (s *Store) ListUserPermissions(ctx context.Context, userID int64) ([]UserPe
 }
 
 // CreateUser adds a new user. If mustChangePassword is true the user is
-// forced to change their password on next login.
+// forced to change their password on next login. The user is created enabled;
+// use CreateUserWithEnabled to create a disabled account.
 func (s *Store) CreateUser(ctx context.Context, username, passwordHash string, isAdmin, mustChangePassword bool) (User, error) {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO users(username,password_hash,is_admin,password_must_change) VALUES(?,?,?,?)`, username, passwordHash, boolInt(isAdmin), boolInt(mustChangePassword))
+	return s.CreateUserWithEnabled(ctx, username, passwordHash, isAdmin, true, mustChangePassword)
+}
+
+// CreateUserWithEnabled is CreateUser with an explicit enabled flag, so the
+// admin API can create a disabled account instead of silently ignoring the
+// caller's choice.
+func (s *Store) CreateUserWithEnabled(ctx context.Context, username, passwordHash string, isAdmin, enabled, mustChangePassword bool) (User, error) {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users(username,password_hash,is_admin,enabled,password_must_change) VALUES(?,?,?,?,?)`, username, passwordHash, boolInt(isAdmin), boolInt(enabled), boolInt(mustChangePassword))
 	if err != nil {
 		return User{}, err
 	}
@@ -1837,49 +1942,24 @@ func (s *Store) DeleteWebhook(ctx context.Context, id int64) error {
 	return err
 }
 
-// CleanupAllPendingGC deletes every recycle_bin row with status='pending_gc'
-// regardless of age. Used by the manual GC button.
-func (s *Store) CleanupAllPendingGC(ctx context.Context) (int, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM recycle_bin WHERE status = 'pending_gc'`)
+// MarkRecycleGCFailure records a failed GC attempt for a recycle-bin item.
+// The item's attempts counter is incremented and the last error stored; once
+// attempts reaches maxAttempts the item is moved to status='gc_failed' so it
+// stops being retried on every GC run (it can still be deleted manually).
+// It returns true when the item was just marked permanently failed.
+func (s *Store) MarkRecycleGCFailure(ctx context.Context, id int64, errMsg string, maxAttempts int) (bool, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE recycle_bin SET attempts=COALESCE(attempts,0)+1, last_error=? WHERE id=?`, errMsg, id); err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE recycle_bin SET status='gc_failed' WHERE id=? AND status='pending_gc' AND COALESCE(attempts,0)>=?`, id, maxAttempts)
 	if err != nil {
-		return 0, err
+		return false, err
 	}
 	affected, _ := res.RowsAffected()
-	return int(affected), nil
-}
-
-// RunGC deletes recycle bin items older than the configured retention.
-// recycleGCDays=0 disables automatic GC; invalid values fall back to 30.
-func (s *Store) RunGC(ctx context.Context) int {
-	days := s.GetSettingInt(ctx, "recycleGCDays", 30)
-	if days < 0 {
-		days = 30
-	}
-	if days == 0 {
-		log.Printf("GC skipped: recycleGCDays=0 (disabled)")
-		return 0
-	}
-	deleted, err := s.CleanupExpiredGC(ctx, days)
-	if err != nil {
-		log.Printf("GC failed: %v", err)
-		return 0
-	}
-	log.Printf("GC completed: deleted %d expired items", deleted)
-	return deleted
-}
-
-func (s *Store) CleanupExpiredGC(ctx context.Context, retentionDays int) (int, error) {
-	if retentionDays <= 0 {
-		return 0, errors.New("retention days must be > 0")
-	}
-	// SQLite datetime modifier needs to be a single string, can't be parameterized
-	modifier := fmt.Sprintf("-%d days", retentionDays)
-	res, err := s.db.ExecContext(ctx, `DELETE FROM recycle_bin WHERE status = 'pending_gc' AND deleted_at < datetime('now', ?)`, modifier)
-	if err != nil {
-		return 0, err
-	}
-	affected, err := res.RowsAffected()
-	return int(affected), err
+	return affected > 0, nil
 }
 
 func (s *Store) GetPendingGCStats(ctx context.Context) (int, int64, error) {
@@ -1905,19 +1985,72 @@ func (s *Store) GetRepoPendingGCStats(ctx context.Context, repo string) (int, in
 	return count, size, err
 }
 
+// GetRepoStats returns the tag count and summed size for a repository. Both
+// multi-level ("library/nginx") and single-segment ("nginx", stored under the
+// root namespace) names are supported, so a root-level repository no longer
+// reports a hard 0 size.
 func (s *Store) GetRepoStats(ctx context.Context, repo string) (int, int64, error) {
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid repo name: %s", repo)
-	}
+	nsName, repoName := splitRepoNamespacedName(repo)
 	var tagCount int
 	var totalSize sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(i.size), 0) FROM images i JOIN repositories r ON i.repository_id = r.id JOIN namespaces n ON n.id = r.namespace_id WHERE n.name=? AND r.name=? AND i.deleted = 0`, parts[0], parts[1]).Scan(&tagCount, &totalSize)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(i.size), 0) FROM images i JOIN repositories r ON i.repository_id = r.id JOIN namespaces n ON n.id = r.namespace_id WHERE n.name=? AND r.name=? AND i.deleted = 0`, nsName, repoName).Scan(&tagCount, &totalSize)
 	size := int64(0)
 	if totalSize.Valid {
 		size = totalSize.Int64
 	}
 	return tagCount, size, err
+}
+
+// splitRepoNamespacedName splits "namespace/name" at the first slash, matching
+// resolveRepo and ListAllRepoNames. A name without a slash has the root
+// namespace (""), so single-segment repositories resolve correctly.
+func splitRepoNamespacedName(repo string) (namespace, name string) {
+	if i := strings.Index(repo, "/"); i >= 0 {
+		return repo[:i], repo[i+1:]
+	}
+	return "", repo
+}
+
+// RepositoryFullName returns the canonical "namespace/name" form of a
+// repository id. Root-namespace repositories return just the name instead of
+// the "/name" that a naive concatenation produces.
+func (s *Store) RepositoryFullName(ctx context.Context, id int64) (string, error) {
+	var name string
+	err := s.db.QueryRowContext(ctx, `SELECT CASE WHEN n.name='' THEN r.name ELSE n.name||'/'||r.name END FROM repositories r JOIN namespaces n ON n.id=r.namespace_id WHERE r.id=?`, id).Scan(&name)
+	return name, err
+}
+
+// FavoriteImage is an image row joined with the canonical full repository name.
+type FavoriteImage struct {
+	Image
+	Repo string `json:"repo"`
+}
+
+// ListFavoriteImages returns every non-deleted favorite together with its
+// repository name in a single query, avoiding the per-favorite N+1 lookups the
+// favorites handler used to perform.
+func (s *Store) ListFavoriteImages(ctx context.Context) ([]FavoriteImage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT i.id,i.repository_id,i.tag,i.digest,i.content_type,i.size,i.artifact_type,i.favorite,i.note,i.deleted,i.pushed_at,i.created_at,i.updated_at, CASE WHEN n.name='' THEN r.name ELSE n.name||'/'||r.name END FROM images i JOIN repositories r ON r.id=i.repository_id JOIN namespaces n ON n.id=r.namespace_id WHERE i.favorite=1 AND i.deleted=0 ORDER BY i.updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FavoriteImage
+	for rows.Next() {
+		var fi FavoriteImage
+		var deleted, favorite int
+		var pushedAt sql.NullString
+		if err := rows.Scan(&fi.ID, &fi.RepositoryID, &fi.Tag, &fi.Digest, &fi.ContentType, &fi.Size, &fi.ArtifactType, &favorite, &fi.Note, &deleted, &pushedAt, &fi.CreatedAt, &fi.UpdatedAt, &fi.Repo); err != nil {
+			return nil, err
+		}
+		fi.Favorite = favorite != 0
+		fi.Deleted = deleted != 0
+		if pushedAt.Valid {
+			fi.PushedAt = pushedAt.String
+		}
+		out = append(out, fi)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) GetGlobalImageStats(ctx context.Context) (int, int, int64, error) {

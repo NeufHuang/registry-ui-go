@@ -2,16 +2,19 @@ package server
 
 import "strings"
 
-// repoBeforeSuffix returns the substring of path that precedes the first
-// occurrence of any of the given marker suffixes, or "" if none match at a
-// positive index. Repository names may contain "/" (multi-level
-// namespaces), so callers must not split on "/" naively; this helper is the
-// single source of truth for locating where the repo name ends and a known
-// API/registry sub-path (e.g. "/manifests/", "/tags") begins.
-func repoBeforeSuffix(path string, suffixes ...string) string {
+// repoBeforeLastSuffix returns the substring of path that precedes the last
+// occurrence of any of the given markers, or "" if none matches at a positive
+// index. Repository names may contain "/" (multi-level namespaces) and may even
+// contain a reserved segment like "tags" or "manifests", so callers must not
+// split on "/" naively. Matching the *last* marker (rather than the first) keeps
+// e.g. "team/tags/tags" and "a/manifests/b/manifests/v1" intact instead of
+// truncating them to the parent namespace. This helper is the single source of
+// truth for locating where the repo name ends and a known API/registry sub-path
+// begins.
+func repoBeforeLastSuffix(path string, markers ...string) string {
 	best := -1
-	for _, suffix := range suffixes {
-		if idx := strings.Index(path, suffix); idx > 0 && (best == -1 || idx < best) {
+	for _, marker := range markers {
+		if idx := strings.LastIndex(path, marker); idx > best {
 			best = idx
 		}
 	}
@@ -42,7 +45,7 @@ func extractV2RepoPath(path string) string {
 	if rest == "" || rest == "_catalog" || strings.HasPrefix(rest, "_catalog/") {
 		return ""
 	}
-	if repo := repoBeforeSuffix(rest, v2SubPathSuffixes...); repo != "" {
+	if repo := repoBeforeLastSuffix(rest, v2SubPathSuffixes...); repo != "" {
 		return repo
 	}
 	return rest
@@ -50,7 +53,8 @@ func extractV2RepoPath(path string) string {
 
 // extractRepoNameFromPath extracts the repository name from a subroute path
 // under /api/repositories/. e.g. "library/nginx/tags" -> "library/nginx",
-// "library/sub/repo/manifests/v1" -> "library/sub/repo".
+// "library/sub/repo/manifests/v1" -> "library/sub/repo",
+// "team/tags/tags" -> "team/tags".
 func extractRepoNameFromPath(path string) string {
-	return repoBeforeSuffix(path, apiRepoSubPathSuffixes...)
+	return repoBeforeLastSuffix(path, apiRepoSubPathSuffixes...)
 }

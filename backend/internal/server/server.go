@@ -3,16 +3,20 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/neuf/registry-ui/backend/internal/config"
@@ -25,11 +29,18 @@ type Server struct {
 	store          *store.Store
 	client         *registry.Client
 	proxyTransport *http.Transport
+	// registryTarget is cfg.RegistryURL parsed once at construction, so the
+	// /v2/ proxy does not re-parse it on every request.
+	registryTarget *url.URL
 	mux            *http.ServeMux
 	sessionStore   sync.Map
-	gcRunning      bool
-	gcLock         sync.RWMutex
-	restartCh      chan struct{}
+	// gcRunning is read by the /v2/ write gate; gcBusy is the single-run
+	// gate that stops two garbage-collect processes from running at once.
+	gcRunning atomic.Bool
+	gcBusy    atomic.Bool
+	restartCh chan struct{}
+	// tagSyncs collapses concurrent background tag refreshes per repo.
+	tagSyncs sync.Map
 }
 
 func New(cfg config.Config, st *store.Store) *Server {
@@ -39,6 +50,9 @@ func New(cfg config.Config, st *store.Store) *Server {
 		transport.TLSClientConfig = cfg.RegistryTLSConfig()
 	}
 	s := &Server{cfg: cfg, store: st, client: registry.NewClient(cfg), proxyTransport: transport, mux: http.NewServeMux(), restartCh: make(chan struct{}, 1)}
+	if target, err := url.Parse(cfg.RegistryURL); err == nil {
+		s.registryTarget = target
+	}
 	s.routes()
 	go s.cleanupSessions()
 	return s
@@ -112,6 +126,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/login", s.handleLogin)
 	s.mux.HandleFunc("/api/health", s.handleHealth)
 	s.mux.HandleFunc("/api/gc/run", s.handleGCRun)
+	s.mux.HandleFunc("/api/gc/status", s.handleGCStatus)
 	s.mux.HandleFunc("/api/disk-usage", s.handleDiskUsage)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/tls/cert", s.handleTLSCert)
@@ -276,23 +291,22 @@ func (s *Server) handleRepositories(w http.ResponseWriter, r *http.Request) {
 	u := s.GetCurrentUser(r)
 	if u != nil && !u.IsAdmin {
 		perms, errPerm := s.store.ListUserPermissions(r.Context(), u.ID)
-		if errPerm == nil && len(perms) > 0 {
-			filtered := make([]string, 0, len(repos))
-			for _, repo := range repos {
-				// pattern match: exact repo or namespace prefix
-				allowed := false
-				for _, p := range perms {
-					if p.CanRead && (repo == p.NamespacePattern || strings.HasPrefix(repo, p.NamespacePattern+"/")) {
-						allowed = true
-						break
-					}
-				}
-				if allowed {
+		if errPerm != nil {
+			// Fail closed: a broken permission lookup must never hand the
+			// full catalog to a non-admin.
+			writeError(w, http.StatusInternalServerError, errPerm)
+			return
+		}
+		filtered := make([]string, 0, len(repos))
+		for _, repo := range repos {
+			for _, p := range perms {
+				if p.CanRead && (repo == p.NamespacePattern || strings.HasPrefix(repo, p.NamespacePattern+"/")) {
 					filtered = append(filtered, repo)
+					break
 				}
 			}
-			repos = filtered
 		}
+		repos = filtered
 	}
 	// Paginate to match CatalogResponse shape
 	n := r.URL.Query().Get("n")
@@ -305,6 +319,9 @@ func (s *Server) handleRepositories(w http.ResponseWriter, r *http.Request) {
 	}
 	start := 0
 	if last != "" {
+		// An unknown cursor must end the pagination, not restart it: falling
+		// back to 0 made the client fetch the first page again and again.
+		start = len(repos)
 		for i, repo := range repos {
 			if repo > last {
 				start = i
@@ -336,6 +353,17 @@ func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Reques
 	if repoName != "" && !s.userCanAccessRepo(r, repoName) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no permission to access this repository"})
 		return
+	}
+	// Mutating subroutes (tag-policy PUT, batch-delete, manifest DELETE,
+	// retention-run, init) additionally require write permission. The read
+	// check above is not enough: it used to let a read-only user delete images
+	// and disable immutable-tag protection through the UI API, even though the
+	// /v2/ proxy path already enforced canWrite.
+	if isMutatingMethod(r.Method) {
+		if repoName == "" || !s.userCanWriteRepo(r, repoName) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no write permission for this repository"})
+			return
+		}
 	}
 	client := s.client
 	// Per-repo stats
@@ -375,7 +403,7 @@ func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Reques
 		if err != nil {
 			// Registry may not know about the repo yet (e.g. UI-init empty repo).
 			// Fallback to the tags stored in the local images table.
-			if strings.Contains(err.Error(), "status=404") {
+			if registry.IsStatus(err, http.StatusNotFound) {
 				rid, rerr := s.resolveRepo(r.Context(), name)
 				if rerr == nil && rid > 0 {
 					imgs, ierr := s.store.ListImagesByRepo(r.Context(), rid)
@@ -436,7 +464,7 @@ func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		// Fetch config blob for image manifests to extract details
-		out.Config = s.fetchImageConfig(client, name, out)
+		out.Config = s.fetchImageConfig(r.Context(), client, name, out)
 		out.ArtifactType = detectArtifactType(out.ContentType, out.Manifest)
 		_ = s.store.AddRecent(r.Context(), s.currentUserID(r), name, ref, "manifest")
 		writeJSON(w, http.StatusOK, out)
@@ -472,7 +500,7 @@ func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Reques
 			}
 			_ = s.store.AddAuditWithImage(r.Context(), s.currentUserID(r), "delete", name, "", ref, "ok", "digest deleted; pending_gc snapshots can be restored before registry garbage-collect", imageID, name+"@"+ref)
 			// Clean up DB record if no tags remain (or repo already gone from registry).
-			if tagsResp, err := client.Tags(r.Context(), name); (err == nil && len(tagsResp.Tags) == 0) || (err != nil && strings.Contains(err.Error(), "status=404")) {
+			if tagsResp, err := client.Tags(r.Context(), name); (err == nil && len(tagsResp.Tags) == 0) || (err != nil && registry.IsStatus(err, http.StatusNotFound)) {
 				s.cleanupRepoDB(r.Context(), name)
 			}
 			writeJSON(w, http.StatusAccepted, map[string]any{"deleted": true, "name": name, "digest": ref, "snapshotCount": snapshotCount, "gcRequired": true, "message": "digest deleted; restore from recycle bin before registry garbage-collect, or run GC later to reclaim storage"})
@@ -515,7 +543,13 @@ func (s *Server) syncTagsAsync(name string, tags []string) {
 	if len(tags) == 0 {
 		return
 	}
+	// Collapse concurrent refreshes of the same repo: without this, a burst of
+	// /tags requests started one full N+1 registry walk per request.
+	if _, loaded := s.tagSyncs.LoadOrStore(name, struct{}{}); loaded {
+		return
+	}
 	go func() {
+		defer s.tagSyncs.Delete(name)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		rid, err := s.resolveRepo(ctx, name)
@@ -583,6 +617,28 @@ func (s *Server) SyncAll(ctx context.Context) error {
 func methodNotAllowed(w http.ResponseWriter) {
 	writeJSON(w, http.StatusMethodNotAllowed, registry.ErrorResponse{Error: "method not allowed"})
 }
+
+// isMutatingMethod reports whether an HTTP method changes server state and
+// therefore needs write, rather than read, authorization.
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	}
+	return false
+}
+
+// requireAdmin writes a 403 and returns false unless the caller is an
+// administrator. When AUTH_MODE=off GetCurrentUser is nil and the endpoint
+// stays open, matching the settings/GC surface; an authenticated non-admin is
+// always rejected.
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if u := s.GetCurrentUser(r); u != nil && !u.IsAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "administrator privileges required"})
+		return false
+	}
+	return true
+}
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("%s %s", r.Method, r.URL.Path)
@@ -595,27 +651,11 @@ func parseID(s string) (int64, bool) {
 }
 
 func (s *Server) handleDiskUsage(w http.ResponseWriter, r *http.Request) {
-	// Get stats from filesystem
-	var registrySize int64 = 0
-	registryDir := filepath.Join(s.cfg.DataDir, "registry")
-	_ = filepath.WalkDir(registryDir, func(path string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			if info, e := d.Info(); e == nil {
-				registrySize += info.Size()
-			}
-		}
-		return nil
-	})
-
-	var totalSize int64 = 0
-	_ = filepath.WalkDir(s.cfg.DataDir, func(path string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			if info, e := d.Info(); e == nil {
-				totalSize += info.Size()
-			}
-		}
-		return nil
-	})
+	// Get stats from filesystem. Report the directory GC actually operates on
+	// (RegistryDataDir, not a hardcoded DataDir/registry guess) so the size
+	// shown here matches what blob GC can reclaim.
+	registrySize := dirSizeBytes(s.cfg.RegistryDataDir)
+	totalSize := dirSizeBytes(s.cfg.DataDir)
 
 	// Count repositories and tags from database (avoids N+1 registry API calls)
 	repoCount, tagCount, _, _ := s.store.GetGlobalImageStats(r.Context())
@@ -729,6 +769,14 @@ func (s *Server) handleRepoTagPolicy(w http.ResponseWriter, r *http.Request) {
 			if err := s.store.SetRepositoryRetentionKeepCount(r.Context(), parts[0], parts[1], req.KeepCount); err == nil {
 				_ = s.store.SetSetting(r.Context(), "retention_keep_count:"+name, "") // clear legacy
 			}
+		} else {
+			// Single-segment repo: no repositories row, so persist the value
+			// under the per-repo settings key that repoKeepCount reads.
+			keep := req.KeepCount
+			if keep < 0 {
+				keep = 0
+			}
+			_ = s.store.SetSetting(r.Context(), "retention_keep_count:"+name, strconv.Itoa(keep))
 		}
 		if req.AnonymousPull != nil {
 			if hasRepo {
@@ -779,7 +827,8 @@ func (s *Server) pushCreateAllowed(ctx context.Context, repo string) bool {
 }
 
 // repoKeepCount returns the retention keep count for a repo, checking per-repo
-// table first, then the global setting (default 0).
+// table first, then the per-repo settings fallback used by single-segment
+// repos, then the global setting (default 0).
 func (s *Server) repoKeepCount(ctx context.Context, repo string) int {
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) == 2 {
@@ -787,7 +836,19 @@ func (s *Server) repoKeepCount(ctx context.Context, repo string) int {
 			return val
 		}
 	}
-	return s.store.GetSettingInt(ctx, "retention_keep_count", 0)
+	// Single-level repos store their per-repo value under the
+	// "retention_keep_count:<repo>" settings key (same pattern as
+	// protection_mode / overwrite_action / push_create_repo).
+	if v, err := s.store.GetSetting(ctx, "retention_keep_count:"+repo); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	global := s.store.GetSettingInt(ctx, "retention_keep_count", 0)
+	if global < 0 {
+		global = 0
+	}
+	return global
 }
 
 // resolveProtectionMode returns the effective protection mode string for a
@@ -1041,8 +1102,11 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"namespaces": nss})
+		writeJSON(w, http.StatusOK, map[string]any{"namespaces": s.filterVisibleNamespaces(r, nss)})
 	case http.MethodPost:
+		if !s.requireAdmin(w, r) {
+			return
+		}
 		var req struct {
 			Name string `json:"name"`
 		}
@@ -1061,6 +1125,29 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// filterVisibleNamespaces hides namespaces a non-admin has no read permission
+// on, so the namespace picker cannot be used to enumerate the whole registry.
+func (s *Server) filterVisibleNamespaces(r *http.Request, nss []store.Namespace) []store.Namespace {
+	u := s.GetCurrentUser(r)
+	if u == nil || u.IsAdmin {
+		return nss
+	}
+	perms, err := s.store.ListUserPermissions(r.Context(), u.ID)
+	if err != nil {
+		return []store.Namespace{}
+	}
+	out := make([]store.Namespace, 0, len(nss))
+	for _, ns := range nss {
+		for _, p := range perms {
+			if p.CanRead && (ns.Name == p.NamespacePattern || strings.HasPrefix(ns.Name, p.NamespacePattern+"/")) {
+				out = append(out, ns)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (s *Server) handleNamespaceByName(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/namespaces/")
 	if name == "" {
@@ -1069,6 +1156,9 @@ func (s *Server) handleNamespaceByName(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodDelete:
+		if !s.requireAdmin(w, r) {
+			return
+		}
 		ns, err := s.store.GetNamespace(r.Context(), name)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err)
@@ -1110,7 +1200,7 @@ func (s *Server) handleMyPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 // fetchImageConfig attempts to fetch and parse the image config blob from a manifest
-func (s *Server) fetchImageConfig(client *registry.Client, repo string, m registry.ManifestResponse) *registry.ImageConfig {
+func (s *Server) fetchImageConfig(ctx context.Context, client *registry.Client, repo string, m registry.ManifestResponse) *registry.ImageConfig {
 	if m.Manifest == nil {
 		return nil
 	}
@@ -1126,7 +1216,11 @@ func (s *Server) fetchImageConfig(client *registry.Client, repo string, m regist
 	if digest == "" {
 		return nil
 	}
-	body, contentType, err := client.Blob(context.Background(), repo, digest)
+	// Bounded so a stalled registry cannot pin the request goroutine forever
+	// (this used to run on context.Background with no deadline at all).
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	body, contentType, err := client.Blob(ctx, repo, digest)
 	if err != nil || len(body) == 0 {
 		return nil
 	}
@@ -1231,48 +1325,185 @@ func detectArtifactType(contentType string, manifest any) string {
 	return ""
 }
 
+const (
+	// defaultRegistryConfigPath mirrors config.Load's default.
+	defaultRegistryConfigPath = "/etc/distribution/config.yml"
+	// gcMaxAttempts is how many times a single recycle item may fail before it
+	// is parked as gc_failed instead of being retried on every GC run.
+	gcMaxAttempts = 5
+	// gcDrainDelay lets in-flight push/upload requests finish after the push
+	// gate closes and before garbage-collect touches storage.
+	gcDrainDelay = 2 * time.Second
+	// gcMetadataTimeout and gcBlobTimeout bound the detached GC phases.
+	gcMetadataTimeout = 5 * time.Minute
+	gcBlobTimeout     = 10 * time.Minute
+)
+
+var errGCAlreadyRunning = errors.New("garbage collection already running")
+
+// GCResult is the structured outcome of a GC run. BlobError is reported
+// separately from MetadataError so the UI can say "metadata cleaned, storage
+// not reclaimed" instead of showing an unconditional success.
+type GCResult struct {
+	MetadataDeleted int    `json:"deletedCount"`
+	BlobDeleted     int    `json:"blobDeleted"`
+	FreedBytes      int64  `json:"freedBytes"`
+	BlobError       string `json:"blobError,omitempty"`
+	MetadataError   string `json:"metadataError,omitempty"`
+	Skipped         bool   `json:"skipped,omitempty"`
+	Busy            bool   `json:"-"`
+}
+
+// beginGC claims the single GC slot and marks GC running for the /v2/ write
+// gate. It fails fast when another GC (manual or scheduled) is already active,
+// which also prevents two `garbage-collect` processes from touching the same
+// storage root concurrently.
+func (s *Server) beginGC() error {
+	if !s.gcBusy.CompareAndSwap(false, true) {
+		return errGCAlreadyRunning
+	}
+	s.gcRunning.Store(true)
+	return nil
+}
+
+func (s *Server) endGC() {
+	s.gcRunning.Store(false)
+	s.gcBusy.Store(false)
+}
+
+// gcRetentionDays returns the configured retention window and whether
+// automatic/manual retention-based GC is disabled (recycleGCDays=0).
+func (s *Server) gcRetentionDays(ctx context.Context) (int, bool) {
+	days := s.store.GetSettingInt(ctx, "recycleGCDays", 30)
+	if days < 0 {
+		days = 30
+	}
+	if days == 0 {
+		return 0, true
+	}
+	return days, false
+}
+
 // RunRegistryGC processes pending_gc recycle-bin items: deletes the manifest
 // from the upstream registry, then removes the local SQLite row.
-// When all=true it processes every pending item (manual GC); when false it
-// respects recycleGCDays (automatic GC).
+// When all=true it processes every pending item (explicit purge); when false
+// it respects recycleGCDays.
 func (s *Server) RunRegistryGC(ctx context.Context, all bool) (int, error) {
-	s.gcLock.Lock()
-	s.gcRunning = true
-	s.gcLock.Unlock()
-	defer func() {
-		s.gcLock.Lock()
-		s.gcRunning = false
-		s.gcLock.Unlock()
-	}()
-
-	days := 0
-	if !all {
-		days = s.store.GetSettingInt(ctx, "recycleGCDays", 30)
-		if days < 0 {
-			days = 30
-		}
-		if days == 0 {
-			log.Printf("GC skipped: recycleGCDays=0 (disabled)")
-			return 0, nil
-		}
-	}
-	items, err := s.store.ListPendingGC(ctx, days)
-	if err != nil {
+	if err := s.beginGC(); err != nil {
 		return 0, err
 	}
+	defer s.endGC()
+	deleted, _, err := s.runRegistryGC(ctx, all)
+	return deleted, err
+}
+
+// RunGC executes a complete GC cycle (metadata sweep + blob garbage-collect)
+// while holding the push gate for the whole duration. Previously gcRunning was
+// cleared as soon as the metadata sweep returned, so pushes were allowed again
+// while `garbage-collect` was still running — the exact window in which a
+// freshly pushed manifest can be treated as unreferenced and deleted.
+func (s *Server) RunGC(ctx context.Context, all bool) GCResult {
+	var res GCResult
+	if err := s.beginGC(); err != nil {
+		res.MetadataError = err.Error()
+		res.Busy = true
+		return res
+	}
+	defer s.endGC()
+
+	// Give requests that already passed the gate a moment to complete before
+	// storage is walked.
+	if err := sleepCtx(ctx, gcDrainDelay); err != nil {
+		res.MetadataError = err.Error()
+		return res
+	}
+	deleted, skipped, err := s.runRegistryGC(ctx, all)
+	res.MetadataDeleted = deleted
+	res.Skipped = skipped
+	if err != nil {
+		res.MetadataError = err.Error()
+	}
+	blobDeleted, freed, berr := s.runBlobGC(ctx)
+	res.BlobDeleted = blobDeleted
+	res.FreedBytes = freed
+	if berr != nil {
+		res.BlobError = berr.Error()
+	}
+	return res
+}
+
+// runRegistryGC is the gate-free core of the metadata GC.
+func (s *Server) runRegistryGC(ctx context.Context, all bool) (int, bool, error) {
+	var items []store.RecycleItem
+	var err error
+	if all {
+		items, err = s.store.ListAllPendingGC(ctx)
+	} else {
+		days, disabled := s.gcRetentionDays(ctx)
+		if disabled {
+			log.Printf("GC skipped: recycleGCDays=0 (disabled)")
+			return 0, true, nil
+		}
+		items, err = s.store.ListPendingGC(ctx, days)
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	deleted, err := s.processGCItems(ctx, items)
+	return deleted, false, err
+}
+
+// processGCItems deletes the manifests behind recycle-bin items and removes
+// their local rows. Before deleting by digest it verifies the digest is no
+// longer referenced by any live tag, so a stale or untag snapshot can never
+// wipe tags that were meant to survive.
+func (s *Server) processGCItems(ctx context.Context, items []store.RecycleItem) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
 	deleted := 0
+	liveCache := map[string]map[string]bool{}
 	for _, item := range items {
 		if item.Digest == "" {
 			_ = s.store.DeleteRecycleItem(ctx, item.ID)
 			deleted++
 			continue
 		}
+		live, ok := liveCache[item.Repo]
+		if !ok {
+			var lerr error
+			live, lerr = s.liveDigestsForRepo(ctx, item.Repo)
+			if lerr != nil {
+				if registry.IsStatus(lerr, http.StatusNotFound) {
+					// Repository no longer exists: nothing can be referenced.
+					live = map[string]bool{}
+				} else {
+					log.Printf("GC: cannot verify live tags repo=%s: %v", item.Repo, lerr)
+					s.recordGCFailure(ctx, item, lerr)
+					continue
+				}
+			}
+			liveCache[item.Repo] = live
+		}
+		if live[item.Digest] {
+			// A live tag still points at this digest (stale snapshot, or a
+			// proxy DELETE that failed / only untagged). Deleting by digest
+			// would remove those tags too; drop the stale record instead.
+			log.Printf("GC: digest still referenced by a live tag, dropping stale record repo=%s ref=%s digest=%s", item.Repo, item.Reference, item.Digest)
+			if err := s.store.DeleteRecycleItem(ctx, item.ID); err != nil {
+				log.Printf("GC: DeleteRecycleItem failed id=%d: %v", item.ID, err)
+				continue
+			}
+			deleted++
+			continue
+		}
 		if err := s.client.DeleteManifest(ctx, item.Repo, item.Digest); err != nil {
-			if strings.Contains(err.Error(), "status=404") {
+			if registry.IsStatus(err, http.StatusNotFound) {
 				// Manifest already gone; safe to clean up local record.
 				log.Printf("GC: manifest already deleted repo=%s digest=%s", item.Repo, item.Digest)
 			} else {
 				log.Printf("GC: DeleteManifest failed repo=%s digest=%s: %v", item.Repo, item.Digest, err)
+				s.recordGCFailure(ctx, item, err)
 				continue
 			}
 		}
@@ -1286,57 +1517,296 @@ func (s *Server) RunRegistryGC(ctx context.Context, all bool) (int, error) {
 	return deleted, nil
 }
 
+// recordGCFailure increments an item's failure counter and parks it as
+// gc_failed after gcMaxAttempts so a permanently broken record cannot make
+// every future GC run hammer the registry with doomed deletes.
+func (s *Server) recordGCFailure(ctx context.Context, item store.RecycleItem, cause error) {
+	// Only count failures where the registry actually answered. A transport or
+	// timeout error just means the registry was unreachable this run; counting
+	// it would park otherwise-fine items after a short outage.
+	if _, ok := registry.StatusCode(cause); !ok {
+		log.Printf("GC: transient failure id=%d (attempt not counted): %v", item.ID, cause)
+		return
+	}
+	failed, err := s.store.MarkRecycleGCFailure(ctx, item.ID, cause.Error(), gcMaxAttempts)
+	if err != nil {
+		log.Printf("GC: MarkRecycleGCFailure failed id=%d: %v", item.ID, err)
+		return
+	}
+	if failed {
+		log.Printf("GC: recycle item id=%d parked as gc_failed after %d attempts: %v", item.ID, gcMaxAttempts, cause)
+	}
+}
+
+// liveDigestsForRepo returns the set of manifest digests currently referenced
+// by at least one tag in the repository.
+func (s *Server) liveDigestsForRepo(ctx context.Context, repo string) (map[string]bool, error) {
+	tags, err := s.client.Tags(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	live := make(map[string]bool, len(tags.Tags))
+	for _, tag := range tags.Tags {
+		d, _, derr := s.client.Digest(ctx, repo, tag)
+		if derr != nil || d == "" {
+			continue
+		}
+		live[d] = true
+	}
+	return live, nil
+}
+
+// gcRequestAll reports whether the caller explicitly asked to purge the whole
+// recycle bin (query ?all=true or JSON body {"all":true}). Without it, GC
+// honours recycleGCDays.
+func gcRequestAll(r *http.Request) bool {
+	v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("all")))
+	if v == "true" || v == "1" {
+		return true
+	}
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		var body struct {
+			All bool `json:"all"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body); err == nil {
+			return body.All
+		}
+	}
+	return false
+}
+
 func (s *Server) handleGCRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
-	deleted, err := s.RunRegistryGC(r.Context(), true)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+	// Admin only: GC permanently deletes recycle-bin records and blocks all
+	// pushes while it runs. When AUTH_MODE=off GetCurrentUser is nil and the
+	// endpoint stays open, matching the rest of the settings surface.
+	if u := s.GetCurrentUser(r); u != nil && !u.IsAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "garbage collection requires an administrator account"})
 		return
 	}
-	blobDeleted, freed, err := s.RunBlobGC(r.Context())
-	if err != nil {
-		log.Printf("manual blob GC failed: %v", err)
+	all := gcRequestAll(r)
+	// Detached context: a long GC must not be cancelled because the browser
+	// closed the tab (that used to kill the garbage-collect child process).
+	ctx, cancel := context.WithTimeout(context.Background(), gcMetadataTimeout+gcBlobTimeout)
+	defer cancel()
+	res := s.RunGC(ctx, all)
+	if res.MetadataError != "" {
+		status := http.StatusInternalServerError
+		if res.Busy {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]any{"error": res.MetadataError})
+		return
 	}
-	_ = s.store.AddAudit(r.Context(), s.currentUserID(r), "gc.run", "", "", "", "ok", fmt.Sprintf("deleted %d items, blobDeleted=%d, freed=%d", deleted, blobDeleted, freed))
-	writeJSON(w, http.StatusOK, map[string]any{"deletedCount": deleted, "blobDeleted": blobDeleted, "freedBytes": freed})
+	detail := fmt.Sprintf("deleted=%d blobDeleted=%d freed=%d all=%t", res.MetadataDeleted, res.BlobDeleted, res.FreedBytes, all)
+	if res.BlobError != "" {
+		detail += " blobError=" + res.BlobError
+	}
+	_ = s.store.AddAudit(ctx, s.currentUserID(r), "gc.run", "", "", "", "ok", detail)
+	writeJSON(w, http.StatusOK, res)
 }
 
-// RunBlobGC executes `registry garbage-collect` to reclaim blob storage.
-// It returns the number of blobs deleted and approximate freed bytes.
+// handleGCStatus reports whether a GC run is currently in progress. It is a
+// lightweight poll target so clients do not have to hang on the long-running
+// POST /api/gc/run request just to know when GC finished.
+func (s *Server) handleGCStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"running": s.gcRunning.Load()})
+}
+
+// RunBlobGC executes `registry garbage-collect` to reclaim blob storage,
+// behind the single-run gate. It returns the number of blobs deleted and
+// approximate freed bytes.
 func (s *Server) RunBlobGC(ctx context.Context) (int, int64, error) {
+	if err := s.beginGC(); err != nil {
+		return 0, 0, err
+	}
+	defer s.endGC()
+	return s.runBlobGC(ctx)
+}
+
+// runBlobGC is the gate-free core that shells out to the registry binary.
+func (s *Server) runBlobGC(ctx context.Context) (int, int64, error) {
 	configPath := s.cfg.RegistryConfig
 	if configPath == "" {
-		configPath = "/etc/distribution/config.yml"
+		configPath = defaultRegistryConfigPath
 	}
+	// Preflight: fail with an actionable reason instead of spawning a command
+	// that is guaranteed to fail (or, worse, to scan the wrong storage root).
+	if _, err := exec.LookPath("registry"); err != nil {
+		return 0, 0, fmt.Errorf("registry binary not available in PATH: %w", err)
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		return 0, 0, fmt.Errorf("registry config %s is not readable: %w", configPath, err)
+	}
+	if root := registryRootDirectory(configPath); root != "" && s.cfg.RegistryDataDir != "" {
+		if !sameDirectory(root, s.cfg.RegistryDataDir) {
+			return 0, 0, fmt.Errorf("refusing blob GC: config %s rootdirectory=%q does not match REGISTRY_DATA_DIR=%q; run garbage-collect inside the registry container instead", configPath, root, s.cfg.RegistryDataDir)
+		}
+	}
+	before := dirSizeBytes(s.cfg.RegistryDataDir)
 	cmd := exec.CommandContext(ctx, "registry", "garbage-collect", configPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return 0, 0, fmt.Errorf("registry garbage-collect failed: %w (output: %s)", err, string(out))
+		return 0, 0, fmt.Errorf("registry garbage-collect failed: %w (output: %s)", err, truncateOutput(string(out)))
 	}
-	// Parse output to count deleted blobs and freed space
-	deleted := 0
-	var freed int64
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "blob deleted") || strings.Contains(line, "manifest deleted") {
-			deleted++
-		}
-		// Attempt to extract size from lines like "... size=12345 ..."
-		if idx := strings.Index(line, "size="); idx >= 0 {
-			rest := line[idx+5:]
-			if end := strings.IndexAny(rest, " \t\"'"); end > 0 {
-				rest = rest[:end]
-			}
-			if n, err := strconv.ParseInt(rest, 10, 64); err == nil {
-				freed += n
-			}
-		}
+	deleted := countGCDeletions(string(out))
+	after := dirSizeBytes(s.cfg.RegistryDataDir)
+	freed := before - after
+	if freed < 0 {
+		freed = 0
 	}
 	s.cleanupEmptyRepoDirs()
 	return deleted, freed, nil
+}
+
+// registryRootDirectory extracts storage.filesystem.rootdirectory from a
+// distribution config file with a deliberately tiny line scanner (the project
+// has no YAML dependency). Returns "" when the key is absent or unreadable.
+func registryRootDirectory(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		if !strings.HasPrefix(l, "rootdirectory:") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(l, "rootdirectory:"))
+		if i := strings.Index(v, " #"); i >= 0 {
+			v = strings.TrimSpace(v[:i])
+		}
+		v = strings.Trim(v, `"'`)
+		if v == "" {
+			return ""
+		}
+		if abs, err := filepath.Abs(v); err == nil {
+			return abs
+		}
+		return v
+	}
+	return ""
+}
+
+// sameDirectory compares two directory paths, resolving symlinks when the
+// direct comparison fails (e.g. a bind mount).
+func sameDirectory(a, b string) bool {
+	aa, err := filepath.Abs(a)
+	if err != nil {
+		aa = filepath.Clean(a)
+	}
+	bb, err := filepath.Abs(b)
+	if err != nil {
+		bb = filepath.Clean(b)
+	}
+	if aa == bb {
+		return true
+	}
+	ra, erra := filepath.EvalSymlinks(aa)
+	rb, errb := filepath.EvalSymlinks(bb)
+	return erra == nil && errb == nil && ra == rb
+}
+
+// dirSizeBytes sums the size of every regular file below root.
+func dirSizeBytes(root string) int64 {
+	if root == "" {
+		return 0
+	}
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if info, e := d.Info(); e == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// countGCDeletions counts blobs/manifests reported as deleted by
+// `registry garbage-collect`. Its output format is logrus-based and has no
+// size= field, which is why freed bytes are measured by directory delta
+// instead of parsed from stdout.
+func countGCDeletions(out string) int {
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Deleting blob") || strings.Contains(line, "Deleting manifest") {
+			n++
+		}
+	}
+	return n
+}
+
+func truncateOutput(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 2000 {
+		return s[len(s)-2000:]
+	}
+	return s
+}
+
+// sleepCtx waits for d or until ctx is done, whichever comes first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// cleanupEmptyRepoDirs scans the registry filesystem for empty repository
+// directories and removes them. Called after garbage-collect.
+func (s *Server) cleanupEmptyRepoDirs() {
+	if s.cfg.RegistryDataDir == "" {
+		return
+	}
+	base := filepath.Join(s.cfg.RegistryDataDir, "docker", "registry", "v2", "repositories")
+	if info, err := os.Stat(base); err != nil || !info.IsDir() {
+		// Non-filesystem driver, or a different layout (registry v3 storage
+		// backends). Do not guess: leave directory maintenance to the
+		// registry itself.
+		log.Printf("cleanupEmptyRepoDirs: %s not present, skipping", base)
+		return
+	}
+	// Collect directories first, then remove deepest-first: deleting a parent
+	// while WalkDir still has children queued makes the walk report errors.
+	var dirs []string
+	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && path != base {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		entries, err := os.ReadDir(dirs[i])
+		if err != nil || len(entries) > 0 {
+			continue
+		}
+		if err := os.Remove(dirs[i]); err == nil {
+			log.Printf("cleanupEmptyRepoDirs: removed empty dir %s", dirs[i])
+		}
+	}
 }
 
 // cleanupRepoDB removes the repository record from SQLite after all tags
@@ -1365,36 +1835,5 @@ func (s *Server) cleanupRepoDB(ctx context.Context, repo string) {
 		} else {
 			log.Printf("cleanupRepoDB: deleted repo %s (id=%d) from DB", repo, rid)
 		}
-	}
-}
-
-// cleanupEmptyRepoDirs scans the registry filesystem for empty repository
-// directories and removes them. Called after garbage-collect.
-func (s *Server) cleanupEmptyRepoDirs() {
-	base := filepath.Join(s.cfg.RegistryDataDir, "docker", "registry", "v2", "repositories")
-	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip unreadable
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		if path == base {
-			return nil
-		}
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return nil
-		}
-		if len(entries) > 0 {
-			return nil
-		}
-		if err := os.Remove(path); err == nil {
-			log.Printf("cleanupEmptyRepoDirs: removed empty dir %s", path)
-		}
-		return nil
-	})
-	if err != nil {
-		log.Printf("cleanupEmptyRepoDirs: walk failed: %v", err)
 	}
 }

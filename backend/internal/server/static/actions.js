@@ -58,9 +58,15 @@ async function deleteTags(tags, options={}) {
   });
   if (typed !== expected) { toast(t('deleteMismatch'), true); return false; }
   const {data} = await api(`/api/repositories/${encodeRepo(repo)}/manifests/batch-delete`, {method:'POST', body:JSON.stringify({tags})});
-  const ok = data.results.filter(r => r.ok).length;
-  const fail = data.results.filter(r => !r.ok).length;
-  toast(`${t('deleteSent')} (ok:${ok}${fail ? ', fail:'+fail : ''})`);
+  const results = data.results || [];
+  const ok = results.filter(r => r.ok).length;
+  const fail = results.filter(r => !r.ok).length;
+  const warnings = [...new Set(results.filter(r => r.warning).map(r => r.warning))];
+  const summary = `${t('deleteSent')} (ok:${ok}${fail ? ', fail:'+fail : ''})`;
+  // A partial failure — e.g. a surviving sibling tag could not be re-pushed —
+  // must be surfaced instead of hiding behind the success toast.
+  if (warnings.length) toast(`${summary} — ${warnings.join('; ')}`, true, true);
+  else toast(summary);
   state.selectedTags.clear(); clearDetails(); await loadTags(); await refreshSidebars();
   return true;
 }
@@ -78,8 +84,10 @@ async function deleteSelectedRepo() {
 async function deleteNamespace() {
   const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : el('namespaceFilter').value;
   if (!ns || ns === t('root')) { toast(t('noRepoSelected'), true); return; }
-  const repos = state.repos.filter(r => namespaceOf(r) === ns);
-  if (!repos.length) return;
+  // Only namespaces the user can actually write to; the server rejects the
+  // rest with 403.
+  const repos = state.repos.filter(r => namespaceOf(r) === ns && canWriteRepo(r));
+  if (!repos.length) { toast(t('noPermission'), true); return; }
   const typed = await openDeleteConfirm({
     title: t('deleteConfirmTitle'),
     message: t('deleteRepoConfirm', {repo: ns + '/* (' + repos.length + ' repos)'}),
@@ -120,6 +128,9 @@ async function changePassword() {
   const newPassword = el('newPassword').value;
   await api('/api/user/password', {method:'POST', body:JSON.stringify({oldPassword,newPassword})});
   toast(t('passwordChanged'));
+  // Reload so a forced first-login password change unblocks the rest of the
+  // UI (the server rejects every other endpoint until the flag is cleared).
+  setTimeout(() => window.location.reload(), 900);
 }
 async function logout() { try { await api('/api/logout', {method:'POST'}); } catch {} window.location.href = '/login.html'; }
 async function favoriteCurrent() {

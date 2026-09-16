@@ -38,17 +38,23 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPut:
 		var body struct {
-			Avatar string `json:"avatar"`
+			// Pointer so "avatar": "" can explicitly clear the avatar, which the
+			// previous `!= ""` check silently ignored.
+			Avatar *string `json:"avatar"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json", "details": err.Error()})
 			return
 		}
-		if body.Avatar != "" {
-			_ = s.store.SetSetting(r.Context(), "userAvatar", body.Avatar)
+		avatar := ""
+		if body.Avatar != nil {
+			avatar = strings.TrimSpace(*body.Avatar)
+			// An empty value deletes the per-user key, so the next GET
+			// regenerates the default avatar.
+			_ = s.store.SetSetting(r.Context(), avatarSettingKey(s.currentUsername(r)), avatar)
 		}
 		_ = s.store.AddAudit(r.Context(), s.currentUserID(r), "user.avatar.update", "", "", "", "ok", "user="+s.currentUsername(r))
-		writeJSON(w, http.StatusOK, map[string]any{"username": s.currentUsername(r), "avatar": body.Avatar})
+		writeJSON(w, http.StatusOK, map[string]any{"username": s.currentUsername(r), "avatar": avatar})
 	default:
 		methodNotAllowed(w)
 	}
@@ -113,13 +119,24 @@ func (s *Server) currentUsername(r *http.Request) string {
 	return ""
 }
 
+// avatarSettingKey scopes the avatar to a single user. Previously every user
+// shared one global "userAvatar" setting, so uploading an avatar changed it for
+// the whole instance.
+func avatarSettingKey(username string) string {
+	if username == "" {
+		username = store.DefaultAdminUsername
+	}
+	return "userAvatar:" + username
+}
+
 func (s *Server) userAvatar(r *http.Request) string {
-	if v, err := s.store.GetSetting(r.Context(), "userAvatar"); err == nil && strings.TrimSpace(v) != "" {
+	key := avatarSettingKey(s.currentUsername(r))
+	if v, err := s.store.GetSetting(r.Context(), key); err == nil && strings.TrimSpace(v) != "" {
 		return v
 	}
 	avatar, err := s.ensureDefaultAvatar(r)
 	if err == nil && avatar != "" {
-		_ = s.store.SetSetting(r.Context(), "userAvatar", avatar)
+		_ = s.store.SetSetting(r.Context(), key, avatar)
 		return avatar
 	}
 	return ""

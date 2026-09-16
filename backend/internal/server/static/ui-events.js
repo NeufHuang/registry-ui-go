@@ -14,13 +14,17 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 el('settingsBtn').onclick = () => {
   updateStatusDetail();
   switchSettingsTab('ui');
-  const isAdmin = state.user?.isAdmin;
+  // Admin-only tabs require a real admin account (the /api/admin/* routes
+  // reject the AUTH_MODE=off nil user), but GC is open in that mode, so it uses
+  // the broader isAdminUser() check.
+  const isAdmin = !!state.user?.isAdmin;
+  const canAdminister = isAdminUser();
   ['users', 'admin'].forEach(tab => {
     const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
     if (btn) btn.style.display = isAdmin ? '' : 'none';
   });
   const gcBtn = el('runManualGC');
-  if (gcBtn) gcBtn.style.display = isAdmin ? '' : 'none';
+  if (gcBtn) gcBtn.style.display = canAdminister ? '' : 'none';
   if (isAdmin) {
     const statsBox = el('repoStatsDetails');
     if (statsBox) { statsBox.classList.remove('hidden-ui'); loadStats(); }
@@ -112,7 +116,18 @@ el('runManualGC').onclick = async () => {
     submit: async () => ({ok: true}),
   });
   if (!confirmed) return;
-  try { const {data}=await api('/api/gc/run',{method:'POST'}); const freedStr = data.freedBytes ? formatBytes(data.freedBytes) : '0 B'; toast(t('gcDone',{count:data.deletedCount||0, freed: freedStr})); fetchDiskUsage(); } catch(e) { toast(e.message, true); }
+  try {
+    const {data}=await api('/api/gc/run',{method:'POST'});
+    const freedStr = data.freedBytes ? fmtBytes(data.freedBytes) : '0 B';
+    if (data.blobError) {
+      // Metadata was cleaned but storage could not be reclaimed: surface it
+      // instead of claiming a successful GC.
+      toast(t('gcStorageFailed',{count:data.deletedCount||0, freed: freedStr, error:data.blobError}), true, true);
+    } else {
+      toast(t('gcDone',{count:data.deletedCount||0, freed: freedStr}));
+    }
+    fetchDiskUsage();
+  } catch(e) { toast(e.message, true); }
 };
 el('tlsUploadCertBtn').onclick = () => { showModal('tlsCertModal'); };
 el('tlsCertCancelBtn').onclick = () => closeModal('tlsCertModal');

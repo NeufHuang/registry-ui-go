@@ -19,6 +19,12 @@ services:
       UPLOAD_DIR: "/data/uploads"
       CERT_DIR: "/data/certs"
       REGISTRY_DATA_DIR: "/data/registry"
+      # Explicit, not inherited from the image: the UI shells out to
+      # `registry garbage-collect` and RunBlobGC refuses to run unless the
+      # config's storage.filesystem.rootdirectory resolves to the same
+      # directory as REGISTRY_DATA_DIR. Here both point at ./data/registry,
+      # which is also what the registry container mounts as /var/lib/registry.
+      REGISTRY_CONFIG: "/etc/distribution/config.yml"
     volumes:
       - ./data:/data
     depends_on:

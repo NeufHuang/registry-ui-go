@@ -37,7 +37,8 @@
 X-CSRF-Token: <csrf_token cookie 的值>
 ```
 
-例外路径（无需 CSRF）：`/api/login`、`/v2/*`。
+例外（无需 CSRF）：`/api/login`、`/v2/*`，以及携带 `Authorization: Bearer <token>` 的请求
+（Bearer Token 不是浏览器自动携带的凭证，跨站请求无法附加该头，因此不存在 CSRF 风险）。
 
 校验失败返回 `403`：
 
@@ -64,7 +65,7 @@ Authorization: Bearer ru_<prefix>_<hex>
 ```
 
 - Token 格式固定为 `ru_<prefix>_<hex>`，仅在创建时返回一次完整值。
-- 适用于全部 `/api/*` 接口（不适用于 `/v2/*` 代理，后者由 `V2_AUTH_MODE` 决定）。
+- 适用于全部 `/api/*` 接口（不适用于 `/v2/*` 代理，后者由 `V2_AUTH_MODE` 决定），且无需 CSRF Token。
 - Token 过期后自动失效；所属用户被停用后 Token 立即失效。
 
 ---
@@ -97,7 +98,12 @@ Authorization: Bearer ru_<prefix>_<hex>
 - **公开**：无需认证（`AUTH_MODE=off` 时全部公开）。
 - **登录**：任意已登录用户。
 - **管理员**：仅 `isAdmin=true` 用户。
+- **读**：对该仓库所属命名空间有 `canRead` 权限（管理员不限）。
+- **写**：对该仓库所属命名空间有 `canWrite` 权限（管理员不限）。
 - 非管理员用户仅能访问与其命名空间权限（前缀匹配）相符的仓库。
+- 所有**修改类**接口（`POST`/`PUT`/`PATCH`/`DELETE`）在 `/api/repositories/{repo}/*` 下都要求**写**权限，
+  包括 Tag 策略、批量删除、retention 清理、`init`、仓库描述；命名空间增删、导出、全局统计要求**管理员**。
+  回收站 restore/删除记录要求**写**权限。
 
 ---
 
@@ -186,13 +192,11 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 ### POST /api/namespaces
 
-创建命名空间（权限：登录）。请求体 `{ "name": "library" }`。
+创建命名空间。权限：**管理员**。请求体 `{ "name": "library" }`。
 
 ### DELETE /api/namespaces/{name}
 
-删除命名空间（权限：登录）。
-
-> 说明：命名空间端点当前不做管理员校验，仅要求登录；按命名空间的访问隔离体现在仓库列表与 `/v2/*` 授权上。
+删除命名空间及其下的仓库与镜像记录（同一事务内）。权限：**管理员**。
 
 ---
 
@@ -255,7 +259,7 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 ### GET|PUT /api/repositories/{repo}/tag-policy
 
-读取 / 设置该仓库的 Tag 保护策略。
+读取 / 设置该仓库的 Tag 保护策略。GET 权限：**读**；PUT 权限：**写**。
 
 ### GET /api/repositories/{repo}/retention-preview
 
@@ -275,7 +279,7 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 ### GET|PUT /api/repo-description/{repo}
 
-读取 / 更新仓库描述（支持 Markdown）。
+读取 / 更新仓库描述（支持 Markdown）。GET 权限：**读**；PUT 权限：**写**。
 
 ---
 
@@ -303,11 +307,11 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 ### POST /api/recycle/{id}/restore
 
-恢复回收站记录（将快照的 manifest 重新 PUT 回 repo/tag），触发 `restore` webhook 事件。仅 `pending_gc` 状态可恢复，否则返回 `409`。
+恢复回收站记录（将快照的 manifest 重新 PUT 回 repo/tag），触发 `restore` webhook 事件。仅 `pending_gc` 状态可恢复，否则返回 `409`。权限：对该 repo 有**写**权限（管理员不限）；无权限返回 `403`。
 
 ### DELETE /api/recycle/{id}
 
-删除单条回收站记录。
+删除单条回收站记录（丢弃最后一份可恢复的快照）。权限：对该 repo 有**写**权限（管理员不限）；无权限返回 `403`。
 
 ---
 
@@ -338,7 +342,27 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 ### POST /api/gc/run
 
-手动触发回收站 GC（清理过期元数据快照）。权限：登录（任意已登录用户）。仅删除 UI 侧元数据快照，不触发 Registry 原生 blob 回收。
+手动触发垃圾回收。权限：**管理员**。回收站元数据清理 + 调用 `registry garbage-collect` 回收未引用 blob。
+
+- 默认只清理回收站中**已超过 `recycleGCDays` 保留天数**的记录（与自动 GC 一致）；`recycleGCDays=0`（禁用）时不做任何事并返回 `skipped`。
+- 若要清空整个回收站（忽略保留天数，不可恢复），显式传 `?all=true` 或 JSON body `{"all":true}`。
+- GC 在后台上下文（带超时）中执行，客户端断开不会中断；期间所有 push 请求返回 `503`（pull 不受影响）。
+- 同一时刻只允许一个 GC 运行，重复触发返回 `409`。
+
+```json
+{
+  "deletedCount": 3,
+  "blobDeleted": 12,
+  "freedBytes": 104857600,
+  "blobError": "registry garbage-collect failed: ..."
+}
+```
+
+`blobError` 非空表示元数据已清理但存储未回收（例如 registry 二进制/配置不可用、或 config 的 `rootdirectory` 与 `REGISTRY_DATA_DIR` 不一致），前端应明确提示而不是显示成功。`freedBytes` 由 GC 前后目录大小差值计算。
+
+### GET /api/gc/status
+
+返回 `{ "running": true|false }`，供前端轮询 GC 进度，避免长时间挂在一个请求上。
 
 ### POST /api/uploads/logo / POST /api/uploads/avatar
 
@@ -346,11 +370,11 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 ### GET /api/export?format=json|csv
 
-导出全部仓库 tag 清单（含 digest、content-type、size）。
+导出全部仓库 tag 清单（含 digest、content-type、size）。权限：**管理员**（会遍历整个 catalog，不按用户命名空间权限过滤）。
 
 ### GET /api/repo-stats
 
-返回所有仓库的拉取/推送统计列表。
+返回所有仓库的拉取/推送统计列表。权限：**管理员**。
 
 ---
 

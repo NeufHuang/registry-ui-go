@@ -52,14 +52,52 @@ function contentTypeLabel(ct) {
   return ct.split('.').pop() || ct;
 }
 
-async function loadRecycle() { try { const {data}=await api('/api/recycle?limit=50'); el('recycleList').innerHTML=(data.items||[]).map(x=>`<div class="mini recycle-${x.status}"><b>${esc(x.repo)}:${esc(x.reference)}</b><small>${esc(x.digest)} · ${contentTypeLabel(x.contentType)} · ${esc(x.status)} · ${esc(x.deletedAt)}</small><div style="display:flex;gap:4px;margin-top:2px">${x.status==='pending_gc'?`<button class="ghost" data-recycle-restore="${x.id}">${t('restore')}</button><button class="ghost danger" data-recycle-delete="${x.id}">🗑</button>`:x.status==='gc_expired'?`<span class="badge danger">${t('gcExpired')}</span><button class="ghost danger" data-recycle-delete="${x.id}">🗑</button>`:`<span class="badge muted">${t('restored')}</span>`}</div></div>`).join('')||`<div class="hint">${t('noRecycle')}</div>`; document.querySelectorAll('[data-recycle-restore]').forEach(b=>b.onclick=async()=>{try{await api(`/api/recycle/${b.dataset.recycleRestore}/restore`,{method:'POST'}); toast(t('restored')); await loadRecycle(); if (state.selectedRepo) await loadTags();}catch(e){if(e.message&&e.message.includes('gc_expired')){toast(t('gcExpired'),true)}else{toast(e.message,true)}}});     document.querySelectorAll('[data-recycle-delete]').forEach(b=>b.onclick=async()=>{
-      const ok = await openFormDialog({
+async function loadRecycle() {
+  try {
+    const {data} = await api('/api/recycle?limit=50');
+    const items = data.items || [];
+    if (!items.length) { el('recycleList').innerHTML = `<div class="hint">${t('noRecycle')}</div>`; return; }
+    el('recycleList').innerHTML = items.map(x => {
+      // Restore re-pushes a manifest and deleting a record discards the last
+      // recoverable copy, so both need write access on the repo.
+      const writable = canWriteRepo(x.repo);
+      let actions = '';
+      if (x.status === 'pending_gc') {
+        actions = `${writable ? `<button class="ghost" data-recycle-restore="${x.id}">${t('restore')}</button>` : ''}${writable ? `<button class="ghost danger" data-recycle-delete="${x.id}">🗑</button>` : ''}`;
+      } else if (x.status === 'gc_expired' || x.status === 'gc_failed') {
+        const label = x.status === 'gc_expired' ? t('gcExpired') : t('gcFailed');
+        actions = `<span class="badge danger">${esc(label)}</span>${writable ? `<button class="ghost danger" data-recycle-delete="${x.id}">🗑</button>` : ''}`;
+      } else {
+        actions = `<span class="badge muted">${t('restored')}</span>`;
+      }
+      return `<div class="mini recycle-${esc(x.status)}"><b>${esc(x.repo)}:${esc(x.reference)}</b><small>${esc(x.digest)} · ${esc(contentTypeLabel(x.contentType))} · ${esc(x.status)} · ${esc(x.deletedAt)}</small><div style="display:flex;gap:4px;margin-top:2px">${actions}</div></div>`;
+    }).join('');
+    document.querySelectorAll('[data-recycle-restore]').forEach(b => b.onclick = async () => {
+      try {
+        await api(`/api/recycle/${b.dataset.recycleRestore}/restore`, {method:'POST'});
+        toast(t('restored'));
+        await loadRecycle();
+        if (state.selectedRepo) await loadTags();
+      } catch (e) {
+        // api() exposes the machine-readable code (e.g. "gc_expired"), which is
+        // what the 410 response carries; matching on the free-text message never
+        // worked because `details` takes precedence there.
+        if (e.code === 'gc_expired' || (e.message || '').includes('gc_expired')) toast(t('gcExpired'), true);
+        else toast(e.message, true);
+      }
+    });
+    document.querySelectorAll('[data-recycle-delete]').forEach(b => b.onclick = async () => {
+      await openFormDialog({
         title: t('delete'),
         message: t('confirmDeleteRecord'),
         submitLabel: t('delete'),
         danger: true,
-        submit: async () => { try { await api(`/api/recycle/${b.dataset.recycleDelete}`,{method:'DELETE'}); await loadRecycle(); return {ok: true}; } catch (e) { return {ok: false, error: e.message}; } },
+        submit: async () => {
+          try { await api(`/api/recycle/${b.dataset.recycleDelete}`, {method:'DELETE'}); await loadRecycle(); return {ok: true}; }
+          catch (e) { return {ok: false, error: e.message}; }
+        },
       });
-    }); } catch { el('recycleList').innerHTML=`<div class="hint">${t('noRecycle')}</div>`; } }
+    });
+  } catch { el('recycleList').innerHTML = `<div class="hint">${t('noRecycle')}</div>`; }
+}
 async function refreshSidebars() { await Promise.all([loadRecent(), loadFavorites(), loadAudit(), loadRecycle()]); }
-

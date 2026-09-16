@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -64,6 +65,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := s.store.SetSetting(r.Context(), k, v); err != nil {
+				var invalid *store.InvalidSettingError
+				if errors.As(err, &invalid) {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": invalid.Error()})
+					return
+				}
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
@@ -101,8 +107,13 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		username := strings.TrimSpace(req.Username)
+		if username == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "username is required"})
+			return
+		}
 		if len(req.Password) < 6 {
-			writeError(w, http.StatusBadRequest, nil)
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "password_too_short", "details": "password must be at least 6 characters"})
 			return
 		}
 		hash, err := store.HashPassword(req.Password)
@@ -110,7 +121,9 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		user, err := s.store.CreateUser(r.Context(), req.Username, hash, req.IsAdmin, false)
+		// req.Enabled is honoured now: it used to be parsed and dropped, so a
+		// request to create a disabled account silently created an enabled one.
+		user, err := s.store.CreateUserWithEnabled(r.Context(), username, hash, req.IsAdmin, req.Enabled, false)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -160,14 +173,43 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		username := strings.TrimSpace(req.Username)
+		if username == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "username is required"})
+			return
+		}
 		if req.Password != "" {
 			if len(req.Password) < 6 {
-				writeError(w, http.StatusBadRequest, nil)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "password_too_short", "details": "password must be at least 6 characters"})
 				return
 			}
 		}
-		err := s.store.UpdateUser(r.Context(), id, req.Username, req.Password, req.IsAdmin, req.Enabled)
+		// This endpoint sets is_admin/enabled from the request body, so a
+		// partial update could otherwise demote or disable the last enabled
+		// admin and lock everyone out. The dedicated disable path already had
+		// this guard; the generic update did not.
+		target, terr := s.store.GetUserByID(r.Context(), id)
+		if terr != nil {
+			writeError(w, http.StatusNotFound, terr)
+			return
+		}
+		if target.IsAdmin && target.Enabled && (!req.IsAdmin || !req.Enabled) {
+			remaining, cerr := s.store.CountEnabledAdmins(r.Context())
+			if cerr != nil {
+				writeError(w, http.StatusInternalServerError, cerr)
+				return
+			}
+			if remaining <= 1 {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cannot remove the last enabled admin", "details": "promote another user to admin first"})
+				return
+			}
+		}
+		err := s.store.UpdateUser(r.Context(), id, username, req.Password, req.IsAdmin, req.Enabled)
 		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "username already exists"})
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -395,30 +437,22 @@ func (s *Server) handleAdminUserPermissionByID(w http.ResponseWriter, r *http.Re
 func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.store.ListImages(r.Context(), true, false)
+		// One JOINed query instead of two lookups per favorite, and the repo
+		// name is already in canonical "namespace/name" form (the old code
+		// produced "/name" for root-namespace repositories).
+		items, err := s.store.ListFavoriteImages(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 		out := make([]map[string]any, 0, len(items))
 		for _, img := range items {
-			rname := func() string {
-				repo, e := s.store.GetRepositoryByID(r.Context(), img.RepositoryID)
-				if e != nil {
-					return "?"
-				}
-				ns, e2 := s.store.GetNamespaceByID(r.Context(), repo.NamespaceID)
-				if e2 != nil {
-					return repo.Name
-				}
-				return ns.Name + "/" + repo.Name
-			}()
-			if !s.userCanAccessRepo(r, rname) {
+			if !s.userCanAccessRepo(r, img.Repo) {
 				continue
 			}
 			out = append(out, map[string]any{
 				"id":        img.ID,
-				"repo":      rname,
+				"repo":      img.Repo,
 				"reference": img.Tag,
 				"digest":    img.Digest,
 				"note":      img.Note,
@@ -436,6 +470,15 @@ func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if strings.TrimSpace(req.Repo) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "repo is required"})
+			return
+		}
+		// Favoriting upserts repository rows, so it needs read access at least.
+		if !s.userCanAccessRepo(r, req.Repo) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no permission to access this repository"})
 			return
 		}
 		rid, rerr := s.resolveRepo(r.Context(), req.Repo)
@@ -481,6 +524,17 @@ func (s *Server) handleFavoriteByID(w http.ResponseWriter, r *http.Request) {
 	img, err := s.store.GetImageByID(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	// Un-favoriting another user's namespace used to be possible by guessing
+	// an image id; it now requires read access to the image's repository.
+	repoName, rerr := s.store.RepositoryFullName(r.Context(), img.RepositoryID)
+	if rerr != nil {
+		writeError(w, http.StatusInternalServerError, rerr)
+		return
+	}
+	if !s.userCanAccessRepo(r, repoName) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no permission to access this repository"})
 		return
 	}
 	if err := s.store.SetImageFavorite(r.Context(), img.RepositoryID, img.Tag, false, ""); err != nil {

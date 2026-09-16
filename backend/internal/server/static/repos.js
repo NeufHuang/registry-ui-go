@@ -75,4 +75,14 @@ async function selectRepo(repo) {
   await loadRepoDescription(repo);
   await checkRepoProtection(repo);
 }
-function updateRepoActions() { const ns = el('namespaceFilter').value || (state.selectedRepo ? namespaceOf(state.selectedRepo) : ''); el('deleteSelectedReposBtn').disabled = false; el('createRepoBtn').disabled = !ns || ns === t('root'); el('createNamespaceBtn').disabled = false; el('tagSettingsBtn').disabled = !state.selectedRepo; }
+function updateRepoActions() {
+  const ns = el('namespaceFilter').value || (state.selectedRepo ? namespaceOf(state.selectedRepo) : '');
+  const selected = [...state.selectedRepos];
+  const canAct = selected.length
+    ? selected.some(canWriteRepo)
+    : (state.selectedRepo ? canWriteRepo(state.selectedRepo) : true);
+  el('deleteSelectedReposBtn').disabled = !canAct;
+  el('createRepoBtn').disabled = !ns || ns === t('root') || !canWriteNamespace(ns);
+  el('createNamespaceBtn').disabled = !isAdminUser();
+  el('tagSettingsBtn').disabled = !state.selectedRepo || !canWriteRepo(state.selectedRepo);
+}

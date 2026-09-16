@@ -19,7 +19,7 @@ function updateTagBulkBar() {
   const count = state.selectedTags.size;
   el('selectedTagCount').textContent = t('selectedCount', {count});
   el('selectedTagCount').style.display = count === 0 ? 'none' : '';
-  el('deleteSelectedTagsBtn').disabled = count === 0;
+  el('deleteSelectedTagsBtn').disabled = count === 0 || !canWriteRepo(state.selectedRepo);
 }
 async function selectTag(tag) {
   if (tag === state.selectedTag) {
@@ -115,16 +115,21 @@ function renderSummary(data) {
   renderManifestFields(data);
   applyManifestFieldVisibility();
 }
+// manifestFieldKey maps a checkbox id (e.g. "mfContentType") to its field name
+// ("contentType"). Both the read and the write side must use it, otherwise the
+// persisted key ("mf_contentType") never matches the key read back
+// ("mf_ContentType") and the user's choices are lost on reload.
+function manifestFieldKey(id) { return id.charAt(2).toLowerCase() + id.slice(3); }
 function applyManifestFieldVisibility() {
   document.querySelectorAll('[id^="mf"]').forEach(cb => {
-    const field = cb.id.charAt(2).toLowerCase() + cb.id.slice(3);
+    const field = manifestFieldKey(cb.id);
     const show = cb.checked;
     localStorage.setItem('mf_' + field, show ? '1' : '0');
-    document.querySelectorAll(`[data-field="${field}"]`).forEach(el => el.style.display = show ? '' : 'none');
+    document.querySelectorAll(`[data-field="${field}"]`).forEach(node => node.style.display = show ? '' : 'none');
   });
 }
 document.querySelectorAll('[id^="mf"]').forEach(cb => {
-  const val = localStorage.getItem('mf_' + cb.id.slice(2));
+  const val = localStorage.getItem('mf_' + manifestFieldKey(cb.id));
   if (val !== null) cb.checked = val === '1';
   cb.addEventListener('change', applyManifestFieldVisibility);
 });

@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/neuf/registry-ui/backend/internal/store"
@@ -85,7 +86,16 @@ func (s *Server) handleImmutableRuleByID(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-func matchImmutableTagPattern(pattern, tag string) bool {
+// immutablePatternCache memoises compiled glob patterns. Immutable-tag rules
+// are checked on every manifest PUT, and compiling the regex on each call was
+// pure overhead. A nil entry means "pattern failed to compile".
+var immutablePatternCache sync.Map
+
+func immutablePatternRegexp(pattern string) *regexp.Regexp {
+	if v, ok := immutablePatternCache.Load(pattern); ok {
+		re, _ := v.(*regexp.Regexp)
+		return re
+	}
 	// Convert glob-like pattern to regex: * matches anything, ? matches single char
 	reStr := "^"
 	for _, ch := range pattern {
@@ -101,8 +111,17 @@ func matchImmutableTagPattern(pattern, tag string) bool {
 		}
 	}
 	reStr += "$"
-	matched, _ := regexp.MatchString(reStr, tag)
-	return matched
+	re, err := regexp.Compile(reStr)
+	if err != nil {
+		re = nil
+	}
+	immutablePatternCache.Store(pattern, re)
+	return re
+}
+
+func matchImmutableTagPattern(pattern, tag string) bool {
+	re := immutablePatternRegexp(pattern)
+	return re != nil && re.MatchString(tag)
 }
 
 func (s *Server) checkImmutableTag(ctx context.Context, repo, ref string, forceImmutable bool) (bool, string) {
@@ -132,6 +151,16 @@ func (s *Server) handleRepoDescription(w http.ResponseWriter, r *http.Request) {
 	repo := strings.TrimSuffix(path, "/description")
 	if repo == "" {
 		http.NotFound(w, r)
+		return
+	}
+	// Descriptions are per-repo data: reading needs read access, editing needs
+	// write access. This route previously performed no authorization at all.
+	if !s.userCanAccessRepo(r, repo) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no permission to access this repository"})
+		return
+	}
+	if isMutatingMethod(r.Method) && !s.userCanWriteRepo(r, repo) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden", "details": "no write permission for this repository"})
 		return
 	}
 	switch r.Method {
@@ -266,6 +295,12 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 // Export
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	// The export walks the full registry catalog and returns every repo/tag,
+	// so it must not be reachable by a non-admin (it ignored per-namespace
+	// permissions entirely).
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	format := r.URL.Query().Get("format")
 	if format != "csv" && format != "json" {
 		format = "json"
@@ -318,6 +353,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
+		return
+	}
+	// Global pull/push stats cover every repository, so they are admin-only.
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	stats, err := s.store.ListRepoStats(r.Context())

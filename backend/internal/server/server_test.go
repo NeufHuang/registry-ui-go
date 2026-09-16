@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -229,9 +231,7 @@ func TestGCLockBlocksPush(t *testing.T) {
 	srv := New(cfg, nil)
 
 	// Simulate GC running
-	srv.gcLock.Lock()
-	srv.gcRunning = true
-	srv.gcLock.Unlock()
+	srv.gcRunning.Store(true)
 
 	// Test PUT request (push) is blocked - use a path that won't trigger stats
 	req := httptest.NewRequest(http.MethodPut, "/v2/library/nginx/blobs/uploads/", nil)
@@ -256,9 +256,7 @@ func TestGCLockBlocksPush(t *testing.T) {
 	}
 
 	// Release GC lock
-	srv.gcLock.Lock()
-	srv.gcRunning = false
-	srv.gcLock.Unlock()
+	srv.gcRunning.Store(false)
 
 	// Test PUT after GC is allowed (will fail with bad gateway but not 503)
 	req3 := httptest.NewRequest(http.MethodPut, "/v2/library/nginx/blobs/uploads/", nil)
@@ -427,10 +425,10 @@ func TestUserCanWriteRepo(t *testing.T) {
 	srv := New(config.Config{RegistryURL: "http://localhost:5000"}, st)
 
 	tests := []struct {
-		name     string
-		user     store.User
-		repo     string
-		want     bool
+		name string
+		user store.User
+		repo string
+		want bool
 	}{
 		{"admin can write any repo", adminUser, "testns/testrepo", true},
 		{"admin can write unknown ns", adminUser, "otherns/testrepo", true},
@@ -674,4 +672,209 @@ func TestV2WritePermissionInWithAuth(t *testing.T) {
 			t.Errorf("read-only user GET manifest: should not be 403. Body: %s", rr.Body.String())
 		}
 	})
+}
+
+func TestRegistryRootDirectoryParsing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	write := func(content string) {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("version: 0.1\nstorage:\n  filesystem:\n    rootdirectory: /data/registry\n  delete:\n    enabled: true\n")
+	if got := registryRootDirectory(path); got != "/data/registry" {
+		t.Errorf("plain rootdirectory => %q want /data/registry", got)
+	}
+	write("storage:\n  filesystem:\n    rootdirectory: \"/srv/reg\" # inline comment\n")
+	if got := registryRootDirectory(path); got != "/srv/reg" {
+		t.Errorf("quoted+commented rootdirectory => %q want /srv/reg", got)
+	}
+	write("storage:\n  inmemory: {}\n")
+	if got := registryRootDirectory(path); got != "" {
+		t.Errorf("missing rootdirectory => %q want empty", got)
+	}
+}
+
+func TestSameDirectory(t *testing.T) {
+	base := t.TempDir()
+	sub := filepath.Join(base, "registry")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !sameDirectory(sub, sub) {
+		t.Error("identical paths should match")
+	}
+	if !sameDirectory(sub, filepath.Join(base, "registry")+string(filepath.Separator)) {
+		t.Error("trailing separator should match")
+	}
+	if sameDirectory(sub, filepath.Join(base, "other")) {
+		t.Error("different paths should not match")
+	}
+}
+
+func TestCountGCDeletions(t *testing.T) {
+	out := "time=\"t\" level=info msg=\"Deleting blob: /docker/registry/v2/blobs/sha256/aa/aabb\"\n" +
+		"time=\"t\" level=info msg=\"Deleting manifest: /docker/registry/v2/repositories/foo\"\n" +
+		"time=\"t\" level=info msg=\"something unrelated\"\n"
+	if n := countGCDeletions(out); n != 2 {
+		t.Errorf("countGCDeletions => %d want 2", n)
+	}
+}
+
+func TestGCRequestAll(t *testing.T) {
+	if !gcRequestAll(httptest.NewRequest(http.MethodPost, "/api/gc/run?all=true", nil)) {
+		t.Error("?all=true should request a full purge")
+	}
+	bodyReq := httptest.NewRequest(http.MethodPost, "/api/gc/run", strings.NewReader(`{"all":true}`))
+	bodyReq.Header.Set("Content-Type", "application/json")
+	if !gcRequestAll(bodyReq) {
+		t.Error("JSON body all=true should request a full purge")
+	}
+	if gcRequestAll(httptest.NewRequest(http.MethodPost, "/api/gc/run", nil)) {
+		t.Error("default request must not request a full purge")
+	}
+}
+
+func TestHandleGCRunRequiresAdmin(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(config.Config{RegistryURL: "http://127.0.0.1:1"}, st)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/gc/run", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxUserKey{}, store.User{ID: 2, Username: "bob"}))
+	rr := httptest.NewRecorder()
+	srv.handleGCRun(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("non-admin GC => %d want 403", rr.Code)
+	}
+}
+
+func TestEnforcePasswordChange(t *testing.T) {
+	srv := &Server{}
+	pending := store.User{ID: 1, Username: "admin", MustChangePassword: true}
+	withUser := func(path string, u store.User) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		return r.WithContext(context.WithValue(r.Context(), ctxUserKey{}, u))
+	}
+	for _, path := range []string{"/api/user", "/api/me", "/api/user/password", "/api/logout"} {
+		if !srv.enforcePasswordChange(httptest.NewRecorder(), withUser(path, pending)) {
+			t.Errorf("%s should be exempt from forced password change", path)
+		}
+	}
+	rr := httptest.NewRecorder()
+	if srv.enforcePasswordChange(rr, withUser("/api/repositories", pending)) {
+		t.Error("other endpoints must be blocked until the password changes")
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("blocked request => %d want 403", rr.Code)
+	}
+	if !srv.enforcePasswordChange(httptest.NewRecorder(), withUser("/api/repositories", store.User{ID: 2})) {
+		t.Error("normal users must not be blocked")
+	}
+	if !srv.enforcePasswordChange(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/repositories", nil)) {
+		t.Error("anonymous/auth-disabled requests must not be blocked")
+	}
+}
+
+// newGCMockRegistry serves tags/digests so the liveness guard can be exercised
+// without a real distribution registry.
+func newGCMockRegistry(tags map[string]string, deleted *[]string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/tags/list"):
+			tagNames := make([]string, 0, len(tags))
+			for tag := range tags {
+				tagNames = append(tagNames, tag)
+			}
+			body := `{"name":"foo/bar","tags":[`
+			for i, tag := range tagNames {
+				if i > 0 {
+					body += ","
+				}
+				body += `"` + tag + `"`
+			}
+			body += `]}`
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		case r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/manifests/"):
+			ref := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			if d, ok := tags[ref]; ok {
+				w.Header().Set("Docker-Content-Digest", d)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodDelete:
+			*deleted = append(*deleted, r.URL.Path)
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+}
+
+func TestProcessGCItemsSkipsLiveDigest(t *testing.T) {
+	ctx := context.Background()
+	var deleted []string
+	mock := newGCMockRegistry(map[string]string{"v1": "sha256:live"}, &deleted)
+	defer mock.Close()
+
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(config.Config{RegistryURL: mock.URL, EnableDelete: true}, st)
+
+	if err := st.AddRecycleItem(ctx, store.RecycleItem{Repo: "foo/bar", Reference: "v1", Digest: "sha256:live", ManifestBody: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := st.ListAllPendingGC(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := srv.processGCItems(ctx, items); err != nil || n != 1 {
+		t.Fatalf("processGCItems => (%d, %v) want (1, nil)", n, err)
+	}
+	if len(deleted) != 0 {
+		t.Errorf("must not DeleteManifest a digest still referenced by a live tag, deleted=%v", deleted)
+	}
+	remaining, _ := st.ListAllPendingGC(ctx)
+	if len(remaining) != 0 {
+		t.Errorf("stale record should be dropped, %d left", len(remaining))
+	}
+}
+
+func TestProcessGCItemsDeletesUnreferencedDigest(t *testing.T) {
+	ctx := context.Background()
+	var deleted []string
+	mock := newGCMockRegistry(map[string]string{"v2": "sha256:other"}, &deleted)
+	defer mock.Close()
+
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(config.Config{RegistryURL: mock.URL, EnableDelete: true}, st)
+
+	if err := st.AddRecycleItem(ctx, store.RecycleItem{Repo: "foo/bar", Reference: "v1", Digest: "sha256:dead", ManifestBody: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := st.ListAllPendingGC(ctx)
+	if n, err := srv.processGCItems(ctx, items); err != nil || n != 1 {
+		t.Fatalf("processGCItems => (%d, %v) want (1, nil)", n, err)
+	}
+	if len(deleted) != 1 || !strings.Contains(deleted[0], "sha256:dead") {
+		t.Errorf("expected one DELETE for the unreferenced digest, got %v", deleted)
+	}
+	remaining, _ := st.ListAllPendingGC(ctx)
+	if len(remaining) != 0 {
+		t.Errorf("record should be removed, %d left", len(remaining))
+	}
 }
