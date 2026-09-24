@@ -235,41 +235,85 @@ ports:
   - "127.0.0.1:8080:8080"
 ```
 
+完整且经 `nginx -t` 校验的配置见
+[`deploy/nginx/registry-ui.conf`](../deploy/nginx/registry-ui.conf)。真正关键的几条：
+
 ```nginx
+upstream registry_ui {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2  on;                        # nginx >= 1.25.1；旧版：listen 443 ssl http2;
     server_name registry.example.com;
 
     ssl_certificate     /etc/nginx/certs/fullchain.pem;
     ssl_certificate_key /etc/nginx/certs/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
-    client_max_body_size 0;   # 允许推送大镜像层
+    client_max_body_size 0;           # 允许推送大镜像层
 
-    location / {
-        proxy_pass http://127.0.0.1:8080;
+    location ~ ^/v2(/|$) {
+        proxy_pass http://registry_ui;
+        proxy_http_version 1.1;
 
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
+        # 必须同时保留 host 和端口：$host 会丢掉端口，而 UI 是用请求 Host 重写
+        # blob 上传的 Location —— 在 :9999 这类非默认端口上，上传会指向错误地址。
+        proxy_set_header Host              $http_host;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;   # Secure cookie 必需
+        proxy_set_header Authorization     $http_authorization;  # docker login
+        proxy_set_header Connection        "";                   # 上游 keepalive
 
         proxy_request_buffering off;   # 流式传输大层
         proxy_buffering         off;
         proxy_read_timeout      900s;
+        proxy_cache             off;   # 绝不缓存 401 challenge
     }
-}
 
-server {
-    listen 80;
-    server_name registry.example.com;
-    return 301 https://$host$request_uri;
+    location / {
+        proxy_pass http://registry_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $http_host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization     $http_authorization;
+        proxy_set_header Connection        "";
+    }
 }
 ```
 
-`X-Forwarded-Proto` **必须设置**：TLS 在 Nginx 终止，UI 只看到明文 HTTP，要靠此头
-才会给会话 Cookie 打上 `Secure` 标志。`client_max_body_size 0` 与关闭缓冲可避免大
-镜像层推送时出现 `413`/超时。
+- `X-Forwarded-Proto` **必须设置**：TLS 在 Nginx 终止，UI 只看到明文 HTTP，要靠此头
+  才会给会话 Cookie 打上 `Secure` 标志。
+- 只要不是跑在默认端口，就必须用 `proxy_set_header Host $http_host` 而不是 `$host`：
+  UI 会用请求 Host 重写 blob 上传的 `Location`，端口被丢掉后 `docker push` 会把层
+  传到 `https://host/v2/...`（即 443）并报连接失败。
+- `client_max_body_size 0` 与关闭缓冲可避免大镜像层推送时出现 `413`/超时。
+- **不要**对 `/v2/` 开启 `proxy_cache`（或 CDN 缓存）：被缓存的 `401` challenge 会被
+  回放给凭证完全正确的客户端。
+- 不要破坏 `Authorization` 头：`proxy_set_header Authorization "";`、`auth_request`
+  或 WAF 规则把它剥掉，会让密码正确的 `docker login`/拉取同样失败。
+
+##### 故障排查：`docker login` 成功但 `pull` 报 unauthorized
+
+1. 先端到端确认反代是否正常，再怀疑它：
+
+   ```bash
+   curl -u USER:PASS -I https://registry.example.com/v2/NAMESPACE/REPO/manifests/TAG
+   # 200 -> 反代与凭证都正常
+   # 401 -> 凭证本身是错的（无权访问该命名空间则是 403）
+   ```
+
+   Nginx 默认就透传 `Authorization`；只有显式覆盖、`auth_request`、CDN/WAF 规则
+   或缓存了 `401` 才会破坏它。
+2. Docker 的凭证是**按 `host:port` 精确匹配**的：登录 `registry.example.com:9999`
+   不等于登录 `registry.example.com`（443）、其它端口或内网域名。
+3. `/v2/` 只要收到凭证就会校验，因此 `unauthorized` 说明凭证确实被拒绝了。清掉旧凭证：
+   `docker logout <registry>` 后重新登录。
+4. 携带错误凭证的客户端即使在开启匿名拉取的仓库上也会失败——这是有意为之；
+   `docker logout <registry>` 后同样的拉取就会按匿名放行。
 
 ## 开发
 

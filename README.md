@@ -241,42 +241,93 @@ ports:
   - "127.0.0.1:8080:8080"
 ```
 
+A complete, `nginx -t`-checked configuration is in
+[`deploy/nginx/registry-ui.conf`](deploy/nginx/registry-ui.conf). The directives
+that actually matter:
+
 ```nginx
+upstream registry_ui {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2  on;                        # nginx >= 1.25.1; older: listen 443 ssl http2;
     server_name registry.example.com;
 
     ssl_certificate     /etc/nginx/certs/fullchain.pem;
     ssl_certificate_key /etc/nginx/certs/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
-    client_max_body_size 0;   # allow large image layer pushes
+    client_max_body_size 0;           # allow large image layer pushes
 
-    location / {
-        proxy_pass http://127.0.0.1:8080;
+    location ~ ^/v2(/|$) {
+        proxy_pass http://registry_ui;
+        proxy_http_version 1.1;
 
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
+        # Keep host AND port: `$host` drops the port, and the UI builds the
+        # blob-upload Location from the request Host — behind a port such as
+        # :9999 the upload then goes to the wrong address.
+        proxy_set_header Host              $http_host;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;   # required for Secure cookies
+        proxy_set_header Authorization     $http_authorization;  # docker login
+        proxy_set_header Connection        "";                   # upstream keepalive
 
         proxy_request_buffering off;   # stream large layers
         proxy_buffering         off;
         proxy_read_timeout      900s;
+        proxy_cache             off;   # never cache a 401 challenge
     }
-}
 
-server {
-    listen 80;
-    server_name registry.example.com;
-    return 301 https://$host$request_uri;
+    location / {
+        proxy_pass http://registry_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $http_host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization     $http_authorization;
+        proxy_set_header Connection        "";
+    }
 }
 ```
 
-`X-Forwarded-Proto` is **required**: TLS is terminated at Nginx, so the UI only
-sees plain HTTP and relies on this header to mark session cookies `Secure`.
-`client_max_body_size 0` and disabled buffering prevent `413`/timeout errors on
-large layer pushes.
+- `X-Forwarded-Proto` is **required**: TLS is terminated at Nginx, so the UI only
+  sees plain HTTP and relies on this header to mark session cookies `Secure`.
+- Use `proxy_set_header Host $http_host`, not `$host`, whenever the registry is
+  not served on the default port. The UI rewrites the blob-upload `Location`
+  header from the request Host, so a stripped port makes `docker push` upload to
+  `https://host/v2/...` (port 443) and fail with a connection error.
+- `client_max_body_size 0` plus disabled buffering prevent `413`/timeout errors on
+  large layer pushes.
+- Never enable `proxy_cache` (or a CDN cache) for `/v2/`: a cached `401`
+  challenge is replayed to clients whose credentials are perfectly valid.
+- Keep `Authorization` intact. `proxy_set_header Authorization "";`, an
+  `auth_request` block or a WAF rule that strips it makes every authenticated
+  `docker login`/pull fail even though the password is right.
+
+##### "Login succeeded, but the pull says unauthorized"
+
+1. Check the proxy end to end before blaming it:
+
+   ```bash
+   curl -u USER:PASS -I https://registry.example.com/v2/NAMESPACE/REPO/manifests/TAG
+   # 200 -> proxy and credentials are fine
+   # 401 -> the credential is wrong (or the user lacks read permission -> 403)
+   ```
+
+   Nginx forwards `Authorization` by default; only an explicit override, an
+   `auth_request` block, a CDN/WAF rule or a cached `401` breaks it.
+2. Docker stores credentials **per `host:port`**. Being logged in to
+   `registry.example.com:9999` does not authenticate `registry.example.com`
+   (443), another port, or an internal hostname.
+3. `/v2/` verifies credentials as soon as any are presented, so a pull that
+   reports `unauthorized` means the credential really was rejected. Clear a stale
+   one with `docker logout <registry>` and log in again.
+4. A client that presents bad credentials fails even on repositories with
+   anonymous pull enabled — that is deliberate. `docker logout <registry>` makes
+   the same pull anonymous again.
 
 ## Development
 
