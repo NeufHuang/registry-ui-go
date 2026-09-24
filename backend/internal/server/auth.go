@@ -210,36 +210,36 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/v2/") {
 			switch s.v2AuthMode() {
 			case "ui", "basic", "same":
-				// Allow anonymous pull for repos with anonymous_pull enabled
-				if r.Method == http.MethodGet || r.Method == http.MethodHead {
-					repoPath := ""
-					if strings.Contains(r.URL.Path, "/manifests/") {
-						parts := strings.Split(r.URL.Path, "/manifests/")
-						if len(parts) == 2 {
-							repoPath = strings.TrimPrefix(parts[0], "/v2/")
-						}
-					} else if strings.Contains(r.URL.Path, "/blobs/") {
-						parts := strings.Split(r.URL.Path, "/blobs/")
-						if len(parts) == 2 {
-							repoPath = strings.TrimPrefix(parts[0], "/v2/")
-						}
-					}
-					if repoPath != "" && s.isAnonymousPullAllowed(r.Context(), repoPath) {
-						next.ServeHTTP(w, r)
-						return
-					}
-					// /v2/ ping must always return 200 for unauthenticated requests.
-					// This is required by the OCI Distribution Spec and expected by
-					// the Docker CLI. Anonymous pull is controlled on per-resource
-					// endpoints (manifests/blobs) via isAnonymousPullAllowed.
-					// Returning 401 here would cause the Docker CLI to abort with
-					// "no basic auth credentials" before even attempting anonymous
-					// access, due to how Docker handles Basic auth challenges.
-					if r.URL.Path == "/v2/" || r.URL.Path == "/v2" {
+				// Anonymous pull: a request that presents no credentials is
+				// passed straight through for repositories whose
+				// anonymous_pull flag is enabled (the upstream registry serves
+				// that content without auth). This is decided on the content
+				// endpoints the client actually fetches — manifests and blobs —
+				// so an anonymous `docker pull` keeps working.
+				if r.Header.Get("Authorization") == "" &&
+					(r.Method == http.MethodGet || r.Method == http.MethodHead) {
+					if repoPath := v2PullResourceRepoPath(r.URL.Path); repoPath != "" && s.isAnonymousPullAllowed(r.Context(), repoPath) {
 						next.ServeHTTP(w, r)
 						return
 					}
 				}
+				// Everything else must authenticate: push/delete, repositories
+				// without anonymous pull, and *any* request that presents
+				// credentials.
+				//
+				// A presented credential is always verified. Ignoring it was
+				// what let `docker login` answer "Login Succeeded" for a wrong
+				// password and made a stale stored credential look like "I am
+				// logged in, yet the pull is unauthorized" — the failure only
+				// surfaced on repositories without anonymous pull, because
+				// those are the only ones that hit the authorization check.
+				//
+				// The /v2/ ping (path /v2/ or /v2) therefore challenges
+				// unauthenticated clients with 401 + WWW-Authenticate instead
+				// of returning an unconditional 200. Clients need that
+				// challenge to learn the Basic scheme (and `docker login` needs
+				// it to verify the password at all); anonymous pulls are
+				// unaffected because they are authorized per-repository above.
 				if !s.requireUIAuth(w, r) {
 					return
 				}

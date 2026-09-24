@@ -35,6 +35,22 @@ var apiRepoSubPathSuffixes = []string{
 	"/manifests/batch-delete", "/retention-preview", "/retention-run",
 }
 
+// v2PullResourceRepoPath returns the repository path for the /v2/ endpoints
+// that serve image content (manifests and blobs), or "" for every other
+// /v2/ path (the ping, _catalog, tags/list, ...).
+//
+// It is used to decide anonymous pull, so it must parse the repository name
+// exactly like extractV2RepoPath does; both delegate to repoBeforeLastSuffix
+// so a repository whose name itself contains a reserved segment (e.g.
+// "team/manifests/app") is resolved identically on both paths.
+func v2PullResourceRepoPath(path string) string {
+	rest := strings.TrimPrefix(path, "/v2/")
+	if rest == "" || rest == path {
+		return ""
+	}
+	return repoBeforeLastSuffix(rest, "/manifests/", "/blobs/")
+}
+
 // extractV2RepoPath extracts the repository path from a /v2/ URL.
 // Returns "" for /v2/ (root) and /v2/_catalog which are not repo-specific.
 func extractV2RepoPath(path string) string {

@@ -44,12 +44,15 @@ func TestV2PingAuth(t *testing.T) {
 	srv := New(cfg, st)
 	handler := srv.Handler()
 
-	t.Run("ping without auth returns 200 (OCI spec)", func(t *testing.T) {
+	t.Run("ping without auth returns 401 with a Basic challenge", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
-			t.Errorf("anonymous ping: got %d want 200", rr.Code)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("anonymous ping: got %d want 401", rr.Code)
+		}
+		if got := rr.Header().Get("WWW-Authenticate"); !strings.HasPrefix(got, "Basic ") {
+			t.Errorf("anonymous ping: WWW-Authenticate = %q, want a Basic challenge", got)
 		}
 	})
 
@@ -60,6 +63,16 @@ func TestV2PingAuth(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
 			t.Errorf("authenticated ping: got %d want 200", rr.Code)
+		}
+	})
+
+	t.Run("ping with invalid basic auth returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
+		req.SetBasicAuth("admin", "wrong-password")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("ping with bad credentials: got %d want 401", rr.Code)
 		}
 	})
 
@@ -103,6 +116,14 @@ func TestV2PingAnonymousPull(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	admin, err := st.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateUserPassword(ctx, admin.ID, "testpass"); err != nil {
+		t.Fatal(err)
+	}
+
 	mockReg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -116,12 +137,19 @@ func TestV2PingAnonymousPull(t *testing.T) {
 	srv := New(cfg, st)
 	handler := srv.Handler()
 
-	t.Run("ping returns 200 (always)", func(t *testing.T) {
+	t.Run("ping challenges anonymous clients even with anonymous pull on", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
-			t.Errorf("ping: got %d want 200", rr.Code)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("anonymous ping: got %d want 401", rr.Code)
+		}
+		// ...but the same client can still pull content anonymously.
+		req2 := httptest.NewRequest(http.MethodGet, "/v2/zhuiju/zhuiju/manifests/latest", nil)
+		rr2 := httptest.NewRecorder()
+		handler.ServeHTTP(rr2, req2)
+		if rr2.Code == http.StatusUnauthorized {
+			t.Errorf("anonymous manifest GET with global anon enabled: got 401, want passthrough")
 		}
 	})
 
@@ -152,6 +180,36 @@ func TestV2PingAnonymousPull(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		if rr.Code == http.StatusUnauthorized {
 			t.Errorf("anonymous manifest GET with global anon enabled: got 401, want passthrough")
+		}
+	})
+
+	t.Run("anon-enabled repo still validates a presented credential", func(t *testing.T) {
+		// No credential: anonymous pull must keep working.
+		req := httptest.NewRequest(http.MethodGet, "/v2/library/alpine/manifests/latest", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code == http.StatusUnauthorized {
+			t.Errorf("anonymous manifest GET: got 401, want passthrough")
+		}
+
+		// A credential that IS presented must never be silently ignored: that
+		// is what let `docker login` answer "Login Succeeded" for a wrong
+		// password and then fail the pull with "unauthorized".
+		req2 := httptest.NewRequest(http.MethodGet, "/v2/library/alpine/manifests/latest", nil)
+		req2.SetBasicAuth("admin", "wrong-password")
+		rr2 := httptest.NewRecorder()
+		handler.ServeHTTP(rr2, req2)
+		if rr2.Code != http.StatusUnauthorized {
+			t.Errorf("manifest GET with a bad credential on an anon repo: got %d want 401", rr2.Code)
+		}
+
+		// The same request with valid credentials is accepted.
+		req3 := httptest.NewRequest(http.MethodGet, "/v2/library/alpine/manifests/latest", nil)
+		req3.SetBasicAuth("admin", "testpass")
+		rr3 := httptest.NewRecorder()
+		handler.ServeHTTP(rr3, req3)
+		if rr3.Code == http.StatusUnauthorized {
+			t.Errorf("manifest GET with valid credentials: got 401, want passthrough")
 		}
 	})
 

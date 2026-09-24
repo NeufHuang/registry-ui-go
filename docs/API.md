@@ -604,8 +604,18 @@ Webhook 在发生 `push` / `delete` / `restore` 事件时，异步向配置的 U
 | V2_AUTH_MODE | 行为 |
 |--------------|------|
 | `registry`（默认） | 透传，由上游 Registry 自行鉴权 |
-| `ui` / `basic` / `same` | 由本服务做 UI 认证 + 命名空间授权；可对开启匿名拉取的仓库放行 GET/HEAD manifest |
+| `ui` / `basic` / `same` | 由本服务做 UI 认证 + 命名空间授权；可对开启匿名拉取的仓库放行 GET/HEAD manifest、blobs |
 | `proxy` / `off` | 不干预，交由上游处理 |
 
-- 未认证访问 `/v2/*` 返回 `401` 并带 `WWW-Authenticate: Basic realm="Registry UI"`（符合 Docker CLI 预期）。
+- **未携带凭证**访问 `/v2/`、`/v2`（ping）返回 `401` 并带
+  `WWW-Authenticate: Basic realm="Registry UI"`（符合 OCI 规范与 Docker CLI 预期）。
+  这个 challenge 是必须的：Docker 客户端据此得知本仓库使用 Basic 认证，
+  `docker login` 也据此真正校验密码——否则密码错误也会显示 `Login Succeeded`。
+- **只要请求带了 `Authorization`，凭证一律校验**；无效则返回 `401`，不会静默忽略。
+  这样"凭证过期/写错"会在 `docker login` 或 `docker pull` 时明确报错，而不是只在
+  关闭匿名拉取的命名空间上以 `unauthorized` 的形式暴露。
+- **匿名拉取**：请求未携带凭证时，对 `anonymous_pull` 已开启的仓库，
+  `GET/HEAD .../manifests/...` 与 `.../blobs/...` 直接透传，`docker pull` 无需登录。
+  `/v2/` ping 返回 `401` 不影响匿名拉取（匿名授权按仓库在内容接口上判定）。
 - 非管理员访问无权限仓库返回 `403`。
+- 客户端曾用错误密码登录导致凭证被缓存时，先 `docker logout <registry>` 再重新登录。
