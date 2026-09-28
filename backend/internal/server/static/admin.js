@@ -62,7 +62,7 @@ async function fetchAllNamespaces() {
   try {
     const {data} = await api('/api/namespaces');
     names = (data.namespaces || []).map(n => n.name);
-  } catch {}
+  } catch (e) { console.warn('fetchAllNamespaces: failed to load namespaces', e); }
   const catalogNs = [...new Set(state.repos.map(namespaceOf))].filter(n => n && n !== t('root'));
   return [...new Set([...names, ...catalogNs])].sort();
 }
@@ -429,11 +429,25 @@ async function loadRepoDescription(repo) {
     } else {
       el('repoDescription').style.display = 'none';
     }
-  } catch { el('repoDescription').style.display = 'none'; }
+  } catch (e) { console.warn('loadRepoDescription: failed', e); el('repoDescription').style.display = 'none'; }
 }
 
 function simpleMarkdown(text) {
-  return esc(text).replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>');
+  // Escape first to prevent XSS, then apply formatting on the safe text.
+  // Each replacement only introduces known-safe HTML tags; the content
+  // between them is already escaped so no injection is possible.
+  let s = esc(text);
+  // Paragraphs: double newline → paragraph break
+  s = s.replace(/\n\n/g, '</p><p>');
+  // Line breaks: single newline → <br>
+  s = s.replace(/\n/g, '<br>');
+  // Inline code: backtick-wrapped spans (content already escaped)
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bold: **text** (non-greedy, already escaped)
+  s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  // Italic: *text* (non-greedy, already escaped; must not match inside **)
+  s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<i>$1</i>');
+  return s;
 }
 
 async function saveRepoDescription() {
@@ -451,7 +465,7 @@ async function showRepoDescriptionEdit() {
   try {
     const {data} = await api(`/api/repo-description/${encodeRepo(state.selectedRepo)}/description`);
     el('repoDescInput').value = data?.description || '';
-  } catch { el('repoDescInput').value = ''; }
+  } catch (e) { console.warn('showRepoDescriptionEdit: failed to load description', e); el('repoDescInput').value = ''; }
   el('repoDescription').style.display = 'none';
   el('repoDescriptionEdit').style.display = 'block';
 }

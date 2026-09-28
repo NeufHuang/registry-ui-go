@@ -16,11 +16,22 @@ function openDeleteConfirm({title, message, details, expected}) {
       settled = true;
       ok.onclick = null; cancel.onclick = null; input.oninput = null;
       document.removeEventListener('keydown', escHandler);
+      if (observer) observer.disconnect();
       closeModal('deleteConfirmModal');
       resolve(value);
     };
     const escHandler = (e) => { if (e.key === 'Escape' && !modal.classList.contains('hidden-ui')) { e.stopImmediatePropagation(); cleanup(null); } };
     document.addEventListener('keydown', escHandler);
+    // Guard against the modal being removed from the DOM externally
+    // (e.g. by a full re-render), which would otherwise leak the keydown
+    // listener and leave the Promise permanently pending.
+    let observer = null;
+    if (typeof MutationObserver !== 'undefined') {
+      observer = new MutationObserver(() => {
+        if (!document.body.contains(modal)) cleanup(null);
+      });
+      observer.observe(document.body, {childList: true, subtree: true});
+    }
     input.oninput = () => { ok.disabled = input.value !== expected; };
     ok.onclick = (e) => { e.preventDefault(); if (!ok.disabled) cleanup(input.value); };
     cancel.onclick = (e) => { e.preventDefault(); cleanup(null); };
@@ -91,6 +102,7 @@ function openFormDialog({title, message, fields, submitLabel, submit, danger, wi
       settled = true;
       okBtn.onclick = null; cancel.onclick = null;
       document.removeEventListener('keydown', escHandler);
+      if (observer) observer.disconnect();
       closeModal('formDialogModal');
       resolve(ok);
     };
@@ -122,6 +134,15 @@ function openFormDialog({title, message, fields, submitLabel, submit, danger, wi
       okBtn.textContent = origText;
     };
     const escHandler = (e) => { if (e.key === 'Escape' && !modal.classList.contains('hidden-ui')) { e.stopImmediatePropagation(); cleanup(false); } };
+    // Guard against the modal being removed from the DOM externally,
+    // which would otherwise leak the keydown listener.
+    let observer = null;
+    if (typeof MutationObserver !== 'undefined') {
+      observer = new MutationObserver(() => {
+        if (!document.body.contains(modal)) cleanup(false);
+      });
+      observer.observe(document.body, {childList: true, subtree: true});
+    }
     cancel.onclick = (e) => { e.preventDefault(); cleanup(false); };
     okBtn.onclick = (e) => { e.preventDefault(); onSubmit(); };
     document.addEventListener('keydown', escHandler);

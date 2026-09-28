@@ -27,9 +27,9 @@ async function loadRecent() {
         if (ref) await selectTag(ref);
       };
     });
-  } catch { el('recentList').innerHTML = `<div class="hint">${t('noRecent')}</div>`; }
+  } catch (e) { console.warn('loadRecent: failed', e); el('recentList').innerHTML = `<div class="hint">${t('noRecent')}</div>`; }
 }
-async function loadFavorites() { try { const {data}=await api('/api/favorites'); el('favoritesList').innerHTML=(data.favorites||[]).map(x=>`<div class="mini"><b>${esc(x.repo)}${x.reference?':'+esc(x.reference):''}</b><small>${esc(x.note||x.digest||'')}</small><button class="ghost" data-fav-del="${x.id}">${t('delete')}</button></div>`).join('')||`<div class="hint">${t('noFav')}</div>`; document.querySelectorAll('[data-fav-del]').forEach(b=>b.onclick=async()=>{await api(`/api/favorites/${b.dataset.favDel}`,{method:'DELETE'}); await loadFavorites();}); } catch { el('favoritesList').innerHTML=`<div class="hint">${t('noFav')}</div>`; } }
+async function loadFavorites() { try { const {data}=await api('/api/favorites'); el('favoritesList').innerHTML=(data.favorites||[]).map(x=>`<div class="mini"><b>${esc(x.repo)}${x.reference?':'+esc(x.reference):''}</b><small>${esc(x.note||x.digest||'')}</small><button class="ghost" data-fav-del="${x.id}">${t('delete')}</button></div>`).join('')||`<div class="hint">${t('noFav')}</div>`; document.querySelectorAll('[data-fav-del]').forEach(b=>b.onclick=async()=>{await api(`/api/favorites/${b.dataset.favDel}`,{method:'DELETE'}); await loadFavorites();}); } catch (e) { console.warn('loadFavorites: failed', e); el('favoritesList').innerHTML=`<div class="hint">${t('noFav')}</div>`; } }
 async function loadAudit() {
   if ((state.settings.showAudit??'true') !== 'true') { el('auditList').innerHTML=`<div class="hint">${t('hidden')}</div>`; return; }
   try {
@@ -42,7 +42,7 @@ async function loadAudit() {
       else userLabel = t('systemUser');
       return `<div class="mini"><b>${esc(x.action)} · ${esc(x.status)}</b><small>${esc(userLabel)} · ${esc(x.repo||'')} ${esc(x.reference||'')} ${esc(x.detail||'')}</small></div>`;
     }).join('')||`<div class="hint">${t('noAudit')}</div>`;
-  } catch { el('auditList').innerHTML=`<div class="hint">${t('noAudit')}</div>`; }
+  } catch (e) { console.warn('loadAudit: failed', e); el('auditList').innerHTML=`<div class="hint">${t('noAudit')}</div>`; }
 }
 function contentTypeLabel(ct) {
   if (!ct) return '';
@@ -98,6 +98,6 @@ async function loadRecycle() {
         },
       });
     });
-  } catch { el('recycleList').innerHTML = `<div class="hint">${t('noRecycle')}</div>`; }
+  } catch (e) { console.warn('loadRecycle: failed', e); el('recycleList').innerHTML = `<div class="hint">${t('noRecycle')}</div>`; }
 }
 async function refreshSidebars() { await Promise.all([loadRecent(), loadFavorites(), loadAudit(), loadRecycle()]); }

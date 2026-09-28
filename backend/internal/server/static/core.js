@@ -44,7 +44,11 @@ async function api(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
     const token = getCSRFToken();
-    if (token) headers['X-CSRF-Token'] = token;
+    if (token) {
+      headers['X-CSRF-Token'] = token;
+    } else {
+      console.warn('api: CSRF token missing for', method, path, '- request may be rejected by server');
+    }
   }
   // Merge caller-supplied headers instead of letting them replace the ones
   // above (spreading options after `headers` used to drop CSRF/Content-Type).
@@ -150,7 +154,7 @@ async function loadUser() {
     return;
   }
   if (!data.isAdmin) {
-    try { const {data: perms} = await api('/api/my-permissions'); state.permissions = perms || []; } catch { state.permissions = []; }
+    try { const {data: perms} = await api('/api/my-permissions'); state.permissions = perms || []; } catch (e) { console.warn('loadUser: failed to load permissions', e); state.permissions = []; }
   } else {
     state.permissions = [];
   }
@@ -175,7 +179,7 @@ function pullCommand() {
   return `docker pull ${currentHost()}/${state.selectedRepo}:${state.selectedTag}`;
 }
 function digestRef() { return state.selectedRepo && state.digest ? `${currentHost()}/${state.selectedRepo}@${state.digest}` : ''; }
-async function copyText(text, label) { if (!text) return; try { await navigator.clipboard.writeText(text); } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); } toast(`${label} ${t('copied')}`); }
+async function copyText(text, label) { if (!text) return; try { await navigator.clipboard.writeText(text); } catch (e) { console.warn('copyText: clipboard API failed, using fallback', e); const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); } toast(`${label} ${t('copied')}`); }
 function copyByKind(kind) {
   if (kind === 'pull') return copyText(pullCommand(), t('copyPull'));
   if (kind === 'digestRef') return copyText(digestRef(), t('digestRef'));

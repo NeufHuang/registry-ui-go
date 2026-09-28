@@ -137,7 +137,7 @@ async function restartService() {
       await fetch(target, {mode: 'no-cors', cache: 'no-store'});
       location.href = target;
       return;
-    } catch {}
+    } catch (e) { console.warn('restartService: poll probe failed, retrying', e); }
     setTimeout(poll, 2000);
   };
   setTimeout(poll, 3000);
@@ -189,7 +189,8 @@ async function fetchDiskUsage() {
     el('diskRegistrySize').textContent = fmtBytes(data.registrySizeBytes || 0);
     el('diskTotalSize').textContent = fmtBytes(data.totalSizeBytes || 0);
     el('diskPendingGCSize').textContent = (data.pendingGCCount || 0) + ' · ' + fmtBytes(data.pendingGCSizeBytes || 0);
-  } catch {
+  } catch (e) {
+    console.warn('fetchDiskUsage: failed', e);
     el('diskRegistrySize').textContent = '?';
     el('diskTotalSize').textContent = '?';
     el('diskPendingGCSize').textContent = '?';

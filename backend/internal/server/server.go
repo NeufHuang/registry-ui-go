@@ -8,11 +8,13 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +74,18 @@ func computeManifestSize(manifest any) int64 {
 	parseSize := func(v any) int64 {
 		switch s := v.(type) {
 		case float64:
+			// JSON numbers are float64; values above 2^53 lose integer
+			// precision. Clamp to MaxInt64 rather than silently wrapping
+			// to a negative number. NaN and Inf are not valid sizes.
+			if math.IsNaN(s) || math.IsInf(s, 0) {
+				return 0
+			}
+			if s > float64(math.MaxInt64) {
+				return math.MaxInt64
+			}
+			if s < 0 {
+				return 0
+			}
 			return int64(s)
 		case json.Number:
 			if n, err := s.Int64(); err == nil {
@@ -321,12 +335,17 @@ func (s *Server) handleRepositories(w http.ResponseWriter, r *http.Request) {
 	if last != "" {
 		// An unknown cursor must end the pagination, not restart it: falling
 		// back to 0 made the client fetch the first page again and again.
+		found := false
 		start = len(repos)
 		for i, repo := range repos {
 			if repo > last {
 				start = i
+				found = true
 				break
 			}
+		}
+		if !found && len(repos) > 0 {
+			log.Printf("handleRepositories: unknown pagination cursor %q (repos count=%d), returning empty page", last, len(repos))
 		}
 	}
 	end := start + pageSize
@@ -970,18 +989,17 @@ func retentionCandidates(images []store.Image, keepCount int, registryTags map[s
 	if len(groups) <= keepCount {
 		return nil
 	}
-	// Sort groups by latestAt descending.
+	// Sort groups by latestAt descending using O(n log n) stable sort.
+	// Stable sort preserves the original insertion order for groups with
+	// identical timestamps, matching the previous bubble-sort behavior
+	// and ensuring deterministic retention decisions.
 	var list []*group
 	for _, g := range groups {
 		list = append(list, g)
 	}
-	for i := 0; i < len(list)-1; i++ {
-		for j := i + 1; j < len(list); j++ {
-			if list[j].latestAt.After(list[i].latestAt) {
-				list[i], list[j] = list[j], list[i]
-			}
-		}
-	}
+	sort.SliceStable(list, func(i, j int) bool {
+		return list[i].latestAt.After(list[j].latestAt)
+	})
 	var out []struct {
 		Digest    string    `json:"digest"`
 		Tags      []string  `json:"tags"`

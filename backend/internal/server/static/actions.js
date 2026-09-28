@@ -4,6 +4,12 @@ async function deleteTags(tags, options={}) {
   const repo = state.selectedRepo;
   // Resolve digests for the selected tags and, so we can tell whether a tag
   // is the last one for its digest, for every other tag in the repo too.
+  // NOTE: The digest cache is only valid for the duration of this single
+  // call. A concurrent push could theoretically change a tag's digest
+  // between our resolution and the server-side delete, but the server
+  // re-resolves digests atomically in deleteTagsAware, so the worst case
+  // is a stale classification shown in the confirmation dialog — the
+  // actual delete is always correct.
   const digestCache = {};
   const digestFor = async (tag) => {
     if (digestCache[tag] !== undefined) return digestCache[tag];
@@ -111,7 +117,7 @@ async function deleteNamespace() {
 }
 async function manifestDigestForTagRef(repo, tag) {
   if (repo === state.selectedRepo && tag === state.selectedTag && state.digest) return state.digest;
-  try { const {data} = await api(`/api/repositories/${encodeRepo(repo)}/manifests/${encodeURIComponent(tag)}`); return data.digest || ''; } catch { return ''; }
+  try { const {data} = await api(`/api/repositories/${encodeRepo(repo)}/manifests/${encodeURIComponent(tag)}`); return data.digest || ''; } catch (e) { console.warn('manifestDigestForTagRef: failed for', repo, tag, e); return ''; }
 }
 async function uploadAvatar() {
   const file = el('profileAvatarFile')?.files?.[0];
@@ -132,7 +138,7 @@ async function changePassword() {
   // UI (the server rejects every other endpoint until the flag is cleared).
   setTimeout(() => window.location.reload(), 900);
 }
-async function logout() { try { await api('/api/logout', {method:'POST'}); } catch {} window.location.href = '/login.html'; }
+async function logout() { try { await api('/api/logout', {method:'POST'}); } catch (e) { console.warn('logout: API call failed, redirecting anyway', e); } window.location.href = '/login.html'; }
 async function favoriteCurrent() {
   if (!state.selectedRepo) return;
   const ok = await openFormDialog({

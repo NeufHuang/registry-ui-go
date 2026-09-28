@@ -10,7 +10,7 @@ async function loadRepos(reset=false) {
     guard++;
   } while (next && guard < 20);
   state.nextLast = next;
-  try { const {data: nsData} = await api('/api/namespaces'); state.namespaces = (nsData.namespaces || []).map(n => n.name); } catch {}
+  try { const {data: nsData} = await api('/api/namespaces'); state.namespaces = (nsData.namespaces || []).map(n => n.name); } catch (e) { console.warn('loadRepos: failed to load namespaces', e); }
   renderNamespaces(); renderRepos(); updateRepoActions();
 }
 function renderNamespaces() {
@@ -59,7 +59,7 @@ async function checkRepoProtection(repo) {
     const icon = el('tagImmutableIcon');
     if (icon) icon.classList.toggle('hidden-ui', !isImmutable);
     state._repoImmutable = isImmutable;
-  } catch { const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); }
+  } catch (e) { console.warn('checkRepoProtection: failed to load stats', e); const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); }
 }
 
 async function selectRepo(repo) {

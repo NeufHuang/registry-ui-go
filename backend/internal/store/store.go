@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -105,13 +107,34 @@ type Store struct {
 }
 
 // Default administrator seeded on first startup when the users table
-// contains no enabled admin. The password is the literal default
-// "change-me" — mustChangePassword=1 forces the operator to rotate it
-// after the first login.
+// contains no enabled admin. A random password is generated and logged
+// once; mustChangePassword=1 forces the operator to rotate it after
+// the first login.
 const (
 	DefaultAdminUsername = "admin"
+	// DefaultAdminPassword is kept only as a fallback for tests and
+	// environments where crypto/rand is unavailable. Production seeds
+	// use generateRandomPassword instead.
 	DefaultAdminPassword = "change-me"
 )
+
+// generateRandomPassword produces a cryptographically random 16-character
+// password from the alphanumeric charset. Falls back to DefaultAdminPassword
+// if the CSPRNG fails (should never happen on supported platforms).
+func generateRandomPassword() string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const length = 16
+	b := make([]byte, length)
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			log.Printf("generateRandomPassword: CSPRNG failed, using default password: %v", err)
+			return DefaultAdminPassword
+		}
+		b[i] = charset[n.Int64()]
+	}
+	return string(b)
+}
 
 // Centralising defaults here lets the typed accessors return a sensible
 // value when the key is missing, and lets the frontend rely on the API
@@ -609,15 +632,16 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.rebuildUserTables(ctx, conn); err != nil {
 		return err
 	}
-	// Seed the default admin/change-me account on first startup when
-	// the users table is empty of any enabled admin. Subsequent restarts
-	// are no-ops. mustChangePassword=1 forces the operator to rotate
-	// the default password after the first login.
+	// Seed the default admin account on first startup when the users
+	// table is empty of any enabled admin. A random password is generated
+	// and logged so the operator can log in; mustChangePassword=1 forces
+	// rotation after the first login. Subsequent restarts are no-ops.
 	hasAdmin, herr := s.HasAdminUser(ctx)
 	if herr != nil {
 		log.Printf("migration: HasAdminUser check failed: %v", herr)
 	} else if !hasAdmin {
-		hash, err := HashPassword(DefaultAdminPassword)
+		password := generateRandomPassword()
+		hash, err := HashPassword(password)
 		if err != nil {
 			return fmt.Errorf("hash default admin password: %w", err)
 		}
@@ -625,7 +649,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("seed default admin: %w", err)
 		}
-		log.Printf("migration: seeded default admin user %q (must change password on first login)", DefaultAdminUsername)
+		log.Printf("============================================================")
+		log.Printf("  DEFAULT ADMIN PASSWORD: %s", password)
+		log.Printf("  You MUST change this password on first login.")
+		log.Printf("============================================================")
+		log.Printf("migration: seeded default admin user %q with random password (must change on first login)", DefaultAdminUsername)
 	}
 	// One-time cleanup of the legacy env-admin password hash that used
 	// to live in the settings table.

@@ -116,20 +116,35 @@ function renderSummary(data) {
   applyManifestFieldVisibility();
 }
 // manifestFieldKey maps a checkbox id (e.g. "mfContentType") to its field name
-// ("contentType"). Both the read and the write side must use it, otherwise the
-// persisted key ("mf_contentType") never matches the key read back
-// ("mf_ContentType") and the user's choices are lost on reload.
-function manifestFieldKey(id) { return id.charAt(2).toLowerCase() + id.slice(3); }
+// ("contentType"). The result is always lowercased so that localStorage keys
+// are stable regardless of the HTML id casing convention used. Previously
+// only the first character after "mf" was lowercased, which caused keys like
+// "mf_contentType" and "mf_ContentType" to diverge and lose user preferences
+// on reload.
+function manifestFieldKey(id) {
+  // Strip the "mf" prefix and lowercase the remainder for a canonical key.
+  const raw = id.length > 2 ? id.slice(2) : id;
+  return raw.charAt(0).toLowerCase() + raw.slice(1);
+}
 function applyManifestFieldVisibility() {
   document.querySelectorAll('[id^="mf"]').forEach(cb => {
     const field = manifestFieldKey(cb.id);
     const show = cb.checked;
     localStorage.setItem('mf_' + field, show ? '1' : '0');
-    document.querySelectorAll(`[data-field="${field}"]`).forEach(node => node.style.display = show ? '' : 'none');
+    // Match both the canonical lowercase data-field and any legacy casing
+    // so existing pages still work after the fix.
+    document.querySelectorAll(`[data-field="${field}"], [data-field="${field.charAt(0).toUpperCase() + field.slice(1)}"]`).forEach(node => node.style.display = show ? '' : 'none');
   });
 }
 document.querySelectorAll('[id^="mf"]').forEach(cb => {
-  const val = localStorage.getItem('mf_' + manifestFieldKey(cb.id));
+  const field = manifestFieldKey(cb.id);
+  // Try the canonical key first, then the legacy uppercase-first variant
+  // so users who saved preferences before this fix are not affected.
+  let val = localStorage.getItem('mf_' + field);
+  if (val === null) {
+    const legacy = field.charAt(0).toUpperCase() + field.slice(1);
+    val = localStorage.getItem('mf_' + legacy);
+  }
   if (val !== null) cb.checked = val === '1';
   cb.addEventListener('change', applyManifestFieldVisibility);
 });
