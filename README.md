@@ -110,6 +110,7 @@ All configuration via environment variables:
 | `SERVER_ADDR` | `:8080` | Server listen address |
 | `AUTH_MODE` | `off` | `off` or `basic` (enable login) |
 | `V2_AUTH_MODE` | `registry` | `/v2/` auth: `ui`/`registry`/`off` |
+| `EXTERNAL_URL` | - | Absolute origin clients use, e.g. `https://registry.example.com:9999`. Pins the OCI token realm and blob-upload `Location` when a reverse proxy does not forward `Host`/`X-Forwarded-Proto` |
 | `REGISTRY_URL` | - | Registry address, e.g. `http://registry:5000` |
 | `REGISTRY_USERNAME` | - | Registry basic auth username |
 | `REGISTRY_PASSWORD` | - | Registry basic auth password |

@@ -36,6 +36,13 @@ type Server struct {
 	registryTarget *url.URL
 	mux            *http.ServeMux
 	sessionStore   sync.Map
+	// sessionDropLogs throttles the "why was this session refused" diagnostics
+	// emitted by getSession/requireUIAuth (see logSessionDrop).
+	sessionDropLogs sync.Map
+	// v2TokenSecret signs the short-lived registry tokens issued by /v2/token.
+	// It lives only in this process: clients re-mint on the next ping, so a
+	// restart invalidates outstanding tokens instead of persisting them.
+	v2TokenSecret []byte
 	// gcRunning is read by the /v2/ write gate; gcBusy is the single-run
 	// gate that stops two garbage-collect processes from running at once.
 	gcRunning atomic.Bool
@@ -51,7 +58,7 @@ func New(cfg config.Config, st *store.Store) *Server {
 	if cfg.RegistryTLSSkipVerify {
 		transport.TLSClientConfig = cfg.RegistryTLSConfig()
 	}
-	s := &Server{cfg: cfg, store: st, client: registry.NewClient(cfg), proxyTransport: transport, mux: http.NewServeMux(), restartCh: make(chan struct{}, 1)}
+	s := &Server{cfg: cfg, store: st, client: registry.NewClient(cfg), proxyTransport: transport, mux: http.NewServeMux(), restartCh: make(chan struct{}, 1), v2TokenSecret: newV2TokenSecret()}
 	if target, err := url.Parse(cfg.RegistryURL); err == nil {
 		s.registryTarget = target
 	}
@@ -183,6 +190,10 @@ func (s *Server) routes() {
 	// Repo stats & export
 	s.mux.HandleFunc("/api/repo-stats", s.handleRepoStats)
 	s.mux.HandleFunc("/api/export", s.handleExport)
+	// OCI token endpoint answering the /v2/ Bearer challenge. Registering the
+	// exact path keeps ServeMux routing it here instead of the /v2/ proxy
+	// (longest pattern wins), and withAuth exempts it from authentication.
+	s.mux.HandleFunc("/v2/token", s.handleV2Token)
 	s.mux.Handle("/v2/", s.newV2Proxy())
 	s.mux.HandleFunc("/uploads/", s.handleUploads)
 	s.mux.HandleFunc("/", s.handleStatic)

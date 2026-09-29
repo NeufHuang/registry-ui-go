@@ -96,14 +96,11 @@ func (s *Server) newV2Proxy() http.Handler {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "registry target is not configured"})
 			return
 		}
-		externalHost := r.Host
-		externalScheme := "http"
-		if r.TLS != nil {
-			externalScheme = "https"
-		}
-		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-			externalScheme = proto
-		}
+		// Origin clients see; the registry's internal Location headers are
+		// rewritten against it. externalOrigin honours EXTERNAL_URL, so a
+		// reverse proxy that does not forward X-Forwarded-Proto/Host cannot
+		// make blob uploads point at an unreachable address.
+		externalPrefix := s.externalOrigin(r)
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		baseDirector := proxy.Director
 		proxy.Director = func(req *http.Request) {
@@ -126,11 +123,19 @@ func (s *Server) newV2Proxy() http.Handler {
 			req.Header.Del("X-Forwarded-Port")
 			switch s.v2AuthMode() {
 			case "ui", "basic", "same":
+				// Bearer headers are ours — either a token minted by
+				// /v2/token or an API token — and mean nothing to the
+				// upstream registry, so drop them before proxying. The
+				// request then falls through to the same credential
+				// handling as an unauthenticated one.
+				if strings.HasPrefix(req.Header.Get("Authorization"), "Bearer ") {
+					req.Header.Del("Authorization")
+				}
 				// Prefer the client's own basic auth header (set by
 				// `docker login`). Fall back to the configured registry
 				// credentials so the proxy still works for tooling
 				// that never sent a basic auth header.
-				if h := req.Header.Get("Authorization"); h == "" {
+				if req.Header.Get("Authorization") == "" {
 					if u, p := s.cfg.RegistryUsername, s.cfg.RegistryPassword; u != "" && p != "" {
 						req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(u+":"+p)))
 					}
@@ -207,7 +212,6 @@ func (s *Server) newV2Proxy() http.Handler {
 			if loc == "" {
 				return nil
 			}
-			externalPrefix := externalScheme + "://" + externalHost
 			// Match the internal host under either scheme. The Director strips
 			// X-Forwarded-Proto so the registry normally emits an http://
 			// Location, but match https:// too as a defensive fallback in case

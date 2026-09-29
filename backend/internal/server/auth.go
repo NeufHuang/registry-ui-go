@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -49,6 +50,26 @@ func (s *Server) secureCookie(r *http.Request) bool {
 	return false
 }
 
+// externalOrigin returns the absolute origin (scheme://host[:port]) clients
+// use to reach this server, for URLs a client has to be able to follow on its
+// own: the OCI token realm and the blob-upload Location header.
+//
+// EXTERNAL_URL wins when configured. It exists for reverse proxies that do
+// not forward X-Forwarded-Proto/Host: without it the origin would be derived
+// from the upstream request (http://127.0.0.1:8080, or a host without the
+// published port) and the client would fetch the token from an address it
+// cannot reach.
+func (s *Server) externalOrigin(r *http.Request) string {
+	if base := strings.TrimRight(strings.TrimSpace(s.cfg.ExternalURL), "/"); base != "" {
+		return base
+	}
+	scheme := "http"
+	if s.secureCookie(r) {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
 // createSession creates a new session and sets cookie
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request, username string) string {
 	b := make([]byte, 32)
@@ -80,18 +101,53 @@ func (s *Server) getSession(r *http.Request) string {
 	}
 	v, ok := s.sessionStore.Load(cookie.Value)
 	if !ok {
+		// The browser presented a cookie this process does not know: it was
+		// issued by another instance, or the store was cleared (restart).
+		// Without this line an unexplained "logged out again" leaves no
+		// server-side trace at all.
+		s.logSessionDrop(shortID(cookie.Value),
+			fmt.Sprintf("cookie=%s… unknown session id: not in this process's store (restart, another instance, or never issued here)", shortID(cookie.Value)))
 		return ""
 	}
 	entry, ok := v.(sessionEntry)
 	if !ok {
 		s.sessionStore.Delete(cookie.Value)
+		s.logSessionDrop(shortID(cookie.Value), fmt.Sprintf("cookie=%s… malformed session entry", shortID(cookie.Value)))
 		return ""
 	}
-	if time.Now().After(entry.expiresAt) {
+	if now := time.Now(); now.After(entry.expiresAt) {
+		created := entry.expiresAt.Add(-sessionTTL)
 		s.sessionStore.Delete(cookie.Value)
+		s.logSessionDrop(shortID(cookie.Value), fmt.Sprintf(
+			"cookie=%s… expired: user=%q age=%s ttl=%s (created %s)",
+			shortID(cookie.Value), entry.username, now.Sub(created).Round(time.Minute), sessionTTL, created.Format(time.RFC3339)))
 		return ""
 	}
 	return entry.username
+}
+
+// shortID truncates a session cookie id for log lines: the full value is a
+// live credential, and the prefix is enough to correlate requests.
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// logSessionDrop records why a session cookie was refused. Output is
+// throttled to one line per key per 10 minutes so a dead cookie left in a
+// browser cannot flood the log; the throttle map itself is pruned by
+// cleanupSessions.
+func (s *Server) logSessionDrop(key, reason string) {
+	now := time.Now()
+	if v, ok := s.sessionDropLogs.Load(key); ok {
+		if last, ok := v.(time.Time); ok && now.Sub(last) < 10*time.Minute {
+			return
+		}
+	}
+	s.sessionDropLogs.Store(key, now)
+	log.Printf("auth: session dropped: %s", reason)
 }
 
 // cleanupSessions periodically evicts expired session entries so the
@@ -104,6 +160,12 @@ func (s *Server) cleanupSessions() {
 		s.sessionStore.Range(func(key, value any) bool {
 			if entry, ok := value.(sessionEntry); !ok || now.After(entry.expiresAt) {
 				s.sessionStore.Delete(key)
+			}
+			return true
+		})
+		s.sessionDropLogs.Range(func(key, value any) bool {
+			if t, ok := value.(time.Time); ok && now.Sub(t) > time.Hour {
+				s.sessionDropLogs.Delete(key)
 			}
 			return true
 		})
@@ -146,6 +208,11 @@ func (s *Server) requireUIAuth(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		// Session user not found or disabled, clear and fall back
+		if err != nil {
+			s.logSessionDrop(sessionUser, fmt.Sprintf("session user %q unusable: lookup failed: %v", sessionUser, err))
+		} else {
+			s.logSessionDrop(sessionUser, fmt.Sprintf("session user %q unusable: account disabled", sessionUser))
+		}
 		s.clearSession(w, r)
 	}
 
@@ -195,8 +262,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Allow login page and static assets without auth
+		// Allow login page, the OCI token endpoint and static assets without auth
 		if r.URL.Path == "/login" || r.URL.Path == "/login.html" || r.URL.Path == "/api/login" ||
+			r.URL.Path == "/v2/token" ||
 			strings.HasPrefix(r.URL.Path, "/uploads/") ||
 			strings.HasSuffix(r.URL.Path, ".css") ||
 			strings.HasSuffix(r.URL.Path, ".js") ||
@@ -210,38 +278,61 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/v2/") {
 			switch s.v2AuthMode() {
 			case "ui", "basic", "same":
-				// Anonymous pull: a request that presents no credentials is
-				// passed straight through for repositories whose
-				// anonymous_pull flag is enabled (the upstream registry serves
-				// that content without auth). This is decided on the content
-				// endpoints the client actually fetches — manifests and blobs —
-				// so an anonymous `docker pull` keeps working.
-				if r.Header.Get("Authorization") == "" &&
-					(r.Method == http.MethodGet || r.Method == http.MethodHead) {
-					if repoPath := v2PullResourceRepoPath(r.URL.Path); repoPath != "" && s.isAnonymousPullAllowed(r.Context(), repoPath) {
+				// The credential presented on the request decides which of three
+				// very different paths is taken:
+				//
+				//   none   → anonymous pull: the manifest/blob endpoints of repos
+				//            whose anonymous_pull flag is enabled are served as-is,
+				//            so `docker pull` works without `docker login`. Every
+				//            other path goes through requireUIAuth, which also
+				//            covers browsers that only hold a session cookie.
+				//   Bearer → the OCI token flow (see v2_token.go). An anonymous
+				//            token receives exactly what a credential-less request
+				//            receives; a user token is a real identity and is
+				//            checked against namespace permissions below.
+				//   other  → Basic (or anything else) is *always* verified. A
+				//            presented credential that gets silently ignored was
+				//            what let `docker login` answer "Login Succeeded" for a
+				//            wrong password and made a stale stored credential look
+				//            like "logged in, yet the pull is unauthorized".
+				authz := r.Header.Get("Authorization")
+				switch {
+				case authz == "":
+					if s.anonymousV2Pull(r) {
 						next.ServeHTTP(w, r)
 						return
 					}
-				}
-				// Everything else must authenticate: push/delete, repositories
-				// without anonymous pull, and *any* request that presents
-				// credentials.
-				//
-				// A presented credential is always verified. Ignoring it was
-				// what let `docker login` answer "Login Succeeded" for a wrong
-				// password and made a stale stored credential look like "I am
-				// logged in, yet the pull is unauthorized" — the failure only
-				// surfaced on repositories without anonymous pull, because
-				// those are the only ones that hit the authorization check.
-				//
-				// The /v2/ ping (path /v2/ or /v2) therefore challenges
-				// unauthenticated clients with 401 + WWW-Authenticate instead
-				// of returning an unconditional 200. Clients need that
-				// challenge to learn the Basic scheme (and `docker login` needs
-				// it to verify the password at all); anonymous pulls are
-				// unaffected because they are authorized per-repository above.
-				if !s.requireUIAuth(w, r) {
-					return
+					if !s.requireUIAuth(w, r) {
+						return
+					}
+				case strings.HasPrefix(authz, "Bearer "):
+					switch s.authenticateV2Bearer(w, r, strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))) {
+					case v2AuthRejected:
+						// 401 + challenge already written.
+						return
+					case v2AuthAnonymous:
+						if s.anonymousV2Pull(r) {
+							next.ServeHTTP(w, r)
+							return
+						}
+						// The ping carries no repository, so an authenticated
+						// anonymous client is answered with plain 200 instead of
+						// a challenge — otherwise a client that re-pings with the
+						// token it just obtained would be challenged forever.
+						// Repository listings and tags still require a user.
+						if r.URL.Path == "/v2/" || r.URL.Path == "/v2" {
+							next.ServeHTTP(w, r)
+							return
+						}
+						s.challenge(w, r)
+						return
+					case v2AuthUser:
+						// Authenticated: fall through to the checks below.
+					}
+				default:
+					if !s.requireUIAuth(w, r) {
+						return
+					}
 				}
 				// After auth, enforce namespace authorization (skip /v2/ root and /v2/_catalog)
 				if repoPath := extractV2RepoPath(r.URL.Path); repoPath != "" {
@@ -323,8 +414,14 @@ func (s *Server) enforcePasswordChange(w http.ResponseWriter, r *http.Request) b
 func (s *Server) challenge(w http.ResponseWriter, r *http.Request) {
 	// Docker CLI expects 401 + WWW-Authenticate for /v2/ paths, and parses the
 	// error code from the OCI Distribution Spec error envelope.
-	if strings.HasPrefix(r.URL.Path, "/v2/") {
-		w.Header().Set("WWW-Authenticate", `Basic realm="Registry UI"`)
+	//
+	// The scheme advertised here must be Bearer (token flow), not Basic: a
+	// Docker client that has no stored credentials treats a Basic challenge as
+	// unsatisfiable and refuses to send any further request to this endpoint
+	// ("no basic auth credentials"), which would break anonymous pull. See
+	// v2_token.go for the full rationale.
+	if r.URL.Path == "/v2" || strings.HasPrefix(r.URL.Path, "/v2/") {
+		w.Header().Set("WWW-Authenticate", s.v2Challenge(r))
 		writeJSON(w, http.StatusUnauthorized, registry.DistributionErrorResponse{
 			Errors: []registry.DistributionError{{Code: "UNAUTHORIZED", Message: "authentication required"}},
 		})

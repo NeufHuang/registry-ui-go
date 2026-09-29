@@ -607,15 +607,28 @@ Webhook 在发生 `push` / `delete` / `restore` 事件时，异步向配置的 U
 | `ui` / `basic` / `same` | 由本服务做 UI 认证 + 命名空间授权；可对开启匿名拉取的仓库放行 GET/HEAD manifest、blobs |
 | `proxy` / `off` | 不干预，交由上游处理 |
 
-- **未携带凭证**访问 `/v2/`、`/v2`（ping）返回 `401` 并带
-  `WWW-Authenticate: Basic realm="Registry UI"`（符合 OCI 规范与 Docker CLI 预期）。
-  这个 challenge 是必须的：Docker 客户端据此得知本仓库使用 Basic 认证，
-  `docker login` 也据此真正校验密码——否则密码错误也会显示 `Login Succeeded`。
-- **只要请求带了 `Authorization`，凭证一律校验**；无效则返回 `401`，不会静默忽略。
-  这样"凭证过期/写错"会在 `docker login` 或 `docker pull` 时明确报错，而不是只在
-  关闭匿名拉取的命名空间上以 `unauthorized` 的形式暴露。
-- **匿名拉取**：请求未携带凭证时，对 `anonymous_pull` 已开启的仓库，
+- **认证流程（OCI Token / Bearer）**：
+  1. `GET /v2/`（ping）未携带凭证 → `401` +
+     `WWW-Authenticate: Bearer realm="https://<host>/v2/token",service="registry-ui"`；
+  2. 客户端请求 `GET /v2/token` 换取 token：**携带 `Basic` 凭证则一律校验**，密码错误
+     返回 `401` + OCI `UNAUTHORIZED` 且不签发 token（否则 `docker login` 会对任意密码
+     显示 `Login Succeeded`）；**不带凭证则签发匿名 token**（有效期 24 小时）；
+  3. 后续 `/v2/*` 请求携带 `Authorization: Bearer <token>`，服务端验签后再按下面的
+     规则做命名空间授权。
+
+  之所以用 Bearer 而不是 `Basic` challenge：Docker 客户端收到 `Basic` 挑战而本地又没有
+  该 `host:port` 的凭据时，会在**发出请求之前**直接报 `no basic auth credentials`，
+  匿名 `docker pull` 因此彻底失败——即使该仓库明明允许匿名拉取；反过来完全不发
+  challenge，则 `docker login` 形同虚设。Bearer 两头都能满足。
+- **凭证一律校验**：`Authorization: Basic …` 或 API Token（`ru_…`）同样会被校验，
+  无效返回 `401`，不会被静默忽略。
+- **匿名拉取**：不带凭证、或持匿名 token 时，对 `anonymous_pull` 已开启的仓库，
   `GET/HEAD .../manifests/...` 与 `.../blobs/...` 直接透传，`docker pull` 无需登录。
-  `/v2/` ping 返回 `401` 不影响匿名拉取（匿名授权按仓库在内容接口上判定）。
-- 非管理员访问无权限仓库返回 `403`。
+- 持用户 token 时按命名空间权限授权：非管理员访问无权限仓库返回 `403`，写操作校验写权限。
+- token 只在本进程内存中验签，服务重启后未完成的传输需要换新 token——客户端会在下一次
+  ping 时自动完成，无需人工干预。
+- 反向代理没有透传 `Host` / `X-Forwarded-Proto` 时，设置
+  `EXTERNAL_URL=https://<对外地址>:<端口>` 来固定 token realm 与 blob 上传 `Location`；
+  否则客户端会拿着上游内网地址去换 token。自检：`curl -sI https://<对外地址>/v2/` 看
+  `WWW-Authenticate` 里的 `realm` 是否指向客户端可达的地址。
 - 客户端曾用错误密码登录导致凭证被缓存时，先 `docker logout <registry>` 再重新登录。

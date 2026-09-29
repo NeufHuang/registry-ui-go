@@ -33,6 +33,7 @@ data/
 
 # Development artifacts
 plan.md
+.gocache/
 registry-ui
 Dockerfile.local
 Dockerfile.runtime

@@ -109,6 +109,7 @@ go run ./backend/cmd/registry-ui
 | `SERVER_ADDR` | `:8080` | 服务监听地址 |
 | `AUTH_MODE` | `off` | `off` 或 `basic`（开启登录） |
 | `V2_AUTH_MODE` | `registry` | `/v2/` 认证：`ui`/`registry`/`off` |
+| `EXTERNAL_URL` | - | 客户端访问本服务的对外地址，如 `https://registry.example.com:9999`；反向代理未透传 `Host`/`X-Forwarded-Proto` 时，用它固定 token realm 与 blob 上传 `Location` |
 | `REGISTRY_URL` | - | Registry 地址，如 `http://registry:5000` |
 | `REGISTRY_USERNAME` | - | Registry Basic Auth 用户名 |
 | `REGISTRY_PASSWORD` | - | Registry Basic Auth 密码 |

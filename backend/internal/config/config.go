@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net/url"
 	"os"
 	"strconv"
@@ -9,9 +10,13 @@ import (
 )
 
 type Config struct {
-	ServerAddr            string
-	AuthMode              string
-	V2AuthMode            string
+	ServerAddr string
+	AuthMode   string
+	V2AuthMode string
+	// ExternalURL is the absolute origin clients use to reach this server,
+	// e.g. "https://registry.example.com:9999". Empty means "derive it from
+	// each request" (TLS or X-Forwarded-Proto + Host).
+	ExternalURL           string
 	RegistryURL           string
 	RegistryUsername      string
 	RegistryPassword      string
@@ -50,6 +55,19 @@ func Load() (Config, error) {
 	if cfg.RegistryURL != "" {
 		if _, err := url.ParseRequestURI(cfg.RegistryURL); err != nil {
 			return cfg, err
+		}
+	}
+	// EXTERNAL_URL overrides the origin used for absolute URLs that clients
+	// must be able to reach — first of all the OCI token realm
+	// ("WWW-Authenticate: Bearer realm=…/v2/token") and the blob-upload
+	// Location header. Behind a reverse proxy that does not forward
+	// X-Forwarded-Proto/Host those would otherwise be built from the
+	// upstream address and the token exchange would fail.
+	cfg.ExternalURL = strings.TrimRight(strings.TrimSpace(os.Getenv("EXTERNAL_URL")), "/")
+	if cfg.ExternalURL != "" {
+		u, err := url.ParseRequestURI(cfg.ExternalURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return cfg, fmt.Errorf("EXTERNAL_URL must be an absolute http(s) URL with a host, got %q", cfg.ExternalURL)
 		}
 	}
 	return cfg, nil
