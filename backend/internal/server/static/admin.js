@@ -471,17 +471,17 @@ el('exportBtn').onclick = async () => {
 // ---- Repo Description ----
 
 async function loadRepoDescription(repo) {
-  if (!repo) { el('repoDescription').style.display = 'none'; return; }
+  if (!repo) { el('repoDescription').classList.add('hidden-ui'); return; }
   try {
     const {data} = await api(`/api/repo-description/${encodeRepo(repo)}/description`);
     const desc = data?.description || '';
     if (desc) {
       el('repoDescText').innerHTML = simpleMarkdown(desc);
-      el('repoDescription').style.display = 'flex';
+      el('repoDescription').classList.remove('hidden-ui');
     } else {
-      el('repoDescription').style.display = 'none';
+      el('repoDescription').classList.add('hidden-ui');
     }
-  } catch (e) { console.warn('loadRepoDescription: failed', e); el('repoDescription').style.display = 'none'; }
+  } catch (e) { console.warn('loadRepoDescription: failed', e); el('repoDescription').classList.add('hidden-ui'); }
 }
 
 // The edit affordance is only offered to users who can actually write the
@@ -489,8 +489,8 @@ async function loadRepoDescription(repo) {
 // save button that is guaranteed to fail is worse than not offering it.
 function applyRepoDescriptionPermissions() {
   const btn = el('editRepoDescBtn');
-  if (btn) btn.style.display = canWriteRepo(state.selectedRepo) ? '' : 'none';
-  if (!canWriteRepo(state.selectedRepo)) el('repoDescriptionEdit').style.display = 'none';
+  if (btn) btn.classList.toggle('hidden-ui', !canWriteRepo(state.selectedRepo));
+  if (!canWriteRepo(state.selectedRepo)) el('repoDescriptionEdit').classList.add('hidden-ui');
 }
 
 function simpleMarkdown(text) {
@@ -516,9 +516,9 @@ async function saveRepoDescription() {
   const desc = el('repoDescInput').value;
   await api(`/api/repo-description/${encodeRepo(state.selectedRepo)}/description`, {method:'PUT', body:JSON.stringify({description: desc})});
   toast(t('descriptionSaved'));
-  el('repoDescriptionEdit').style.display = 'none';
-  el('repoDescription').style.display = desc ? 'flex' : 'none';
+  el('repoDescriptionEdit').classList.add('hidden-ui');
   if (desc) el('repoDescText').innerHTML = simpleMarkdown(desc);
+  loadRepoDescription(state.selectedRepo);
 }
 
 async function showRepoDescriptionEdit() {
@@ -527,8 +527,8 @@ async function showRepoDescriptionEdit() {
     const {data} = await api(`/api/repo-description/${encodeRepo(state.selectedRepo)}/description`);
     el('repoDescInput').value = data?.description || '';
   } catch (e) { console.warn('showRepoDescriptionEdit: failed to load description', e); el('repoDescInput').value = ''; }
-  el('repoDescription').style.display = 'none';
-  el('repoDescriptionEdit').style.display = 'block';
+  el('repoDescription').classList.add('hidden-ui');
+  el('repoDescriptionEdit').classList.remove('hidden-ui');
 }
 
 // ---- Event Bindings ----
@@ -542,7 +542,7 @@ const _sdb = el('saveRepoDescBtn'); if (_sdb) _sdb.onclick = async () => {
   if (!canWriteRepo(state.selectedRepo)) { toast(t('noPermission'), true); return; }
   try { await saveRepoDescription(); } catch(e) { toast(e.message, true); }
 };
-const _cdb = el('cancelRepoDescBtn'); if (_cdb) _cdb.onclick = () => { el('repoDescriptionEdit').style.display = 'none'; loadRepoDescription(state.selectedRepo); };
+const _cdb = el('cancelRepoDescBtn'); if (_cdb) _cdb.onclick = () => { el('repoDescriptionEdit').classList.add('hidden-ui'); loadRepoDescription(state.selectedRepo); };
 
 // Expose to global scope for inline onclick handlers in HTML
 window.closeModal = closeModal;

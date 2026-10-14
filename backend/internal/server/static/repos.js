@@ -31,7 +31,7 @@ function renderNamespaces() {
 function updateRepoBulkBar() {
   const count = state.selectedRepos.size;
   el('selectedRepoCount').textContent = t('selectedCount', {count});
-  el('selectedRepoCount').style.display = count === 0 ? 'none' : '';
+  el('selectedRepoCount').classList.toggle('hidden-ui', count === 0);
 }
 
 function renderRepos() {

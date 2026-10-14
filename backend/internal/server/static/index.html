@@ -36,7 +36,7 @@
     <main class="layout">
       <section class="panel repos">
         <div class="panel-head"><h2 data-i18n="repositories">仓库</h2><div class="panel-tools"><button id="refreshReposBtn" class="icon-btn" type="button" data-i18n-title="refresh" aria-label="刷新仓库">⟳</button><div style="position:relative"><button id="repoMoreBtn" class="icon-btn" type="button">⋯</button><div id="repoMoreDropdown" class="user-dropdown hidden-ui"><button id="createNamespaceBtn" type="button">➕ <span data-i18n="createNamespace">创建命名空间</span></button><button id="createRepoBtn" type="button">➕ <span data-i18n="createRepo">创建仓库</span></button><button id="deleteSelectedReposBtn" type="button" style="color:var(--danger)">✕ <span data-i18n="delete">删除</span></button></div></div></div></div>
-        <span id="selectedRepoCount" class="selection-count" style="display:none">已选 0 个</span>
+        <span id="selectedRepoCount" class="selection-count hidden-ui">已选 0 个</span>
         <select id="namespaceFilter" title="按命名空间分组过滤"><option value="" data-i18n="allNamespaces">全部命名空间</option></select>
         <input id="repoSearch" type="search" name="search" data-i18n-placeholder="searchDirectories" placeholder="搜索仓库..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" />
         <div id="repoList" class="list"></div>
@@ -44,7 +44,7 @@
 
       <section class="panel tags">
         <div class="panel-head"><h2><span data-i18n="imageTags">镜像 Tag</span> <span class="help-dot" tabindex="0" data-i18n-title="latestPolicy">?</span> <span id="tagImmutableIcon" class="immutable-icon hidden-ui" data-i18n-title="repoImmutable" title="不可变仓库">🔒</span></h2><div class="panel-tools"><button id="refreshTagsBtn" class="icon-btn" type="button" data-i18n-title="refresh" aria-label="刷新 Tag">⟳</button><div style="position:relative"><button id="tagMoreBtn" class="icon-btn" type="button">⋯</button><div id="tagMoreDropdown" class="user-dropdown hidden-ui"><button id="tagSettingsBtn" type="button">⚙ <span data-i18n="tagSettings">Tag 策略</span></button><button id="deleteSelectedTagsBtn" type="button" style="color:var(--danger)">✕ <span data-i18n="delete">删除</span></button></div></div></div></div>
-        <span id="selectedTagCount" class="selection-count" style="display:none">已选 0 个</span>
+        <span id="selectedTagCount" class="selection-count hidden-ui">已选 0 个</span>
         <div id="selectedRepo" class="hint" data-i18n="selectImage">请选择镜像</div>
         <input id="tagSearch" type="search" name="search" data-i18n-placeholder="searchTags" placeholder="搜索 tag..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" />
         <div id="tagList" class="list"></div>
@@ -52,21 +52,21 @@
 
       <section class="panel details">
         <div class="panel-head"><h2>Manifest</h2><div class="panel-tools"><button id="favoriteBtn" class="icon-btn" disabled data-i18n-title="favoriteNote" aria-label="收藏/备注">☆</button><div style="position:relative"><button id="manifestMoreBtn" class="icon-btn" type="button">⋯</button><div id="manifestMoreDropdown" class="user-dropdown hidden-ui" style="right:0;left:auto;padding:8px;min-width:160px"><label class="mf-item"><input type="checkbox" id="mfArtifactType" checked /> artifactType</label><label class="mf-item"><input type="checkbox" id="mfContentType" checked /> contentType</label><label class="mf-item"><input type="checkbox" id="mfMediaType" checked /> mediaType</label><label class="mf-item"><input type="checkbox" id="mfSchema" checked /> schema</label><label class="mf-item"><input type="checkbox" id="mfLayers" checked /> layers</label><label class="mf-item"><input type="checkbox" id="mfPlatforms" checked /> platforms</label></div></div></div></div>
-        <div id="selectedRef" class="hint" data-i18n="selectTag" style="display:none">请选择 tag</div>
-        <div id="repoDescription" class="repo-desc" style="display:none;">
+        <div id="selectedRef" class="hint hidden-ui" data-i18n="selectTag">请选择 tag</div>
+        <div id="repoDescription" class="repo-desc hidden-ui;">
           <div id="repoDescText" class="desc-content"></div>
           <button id="editRepoDescBtn" class="icon-btn ghost" type="button" title="Edit description">✏</button>
         </div>
-        <div id="repoDescriptionEdit" class="repo-desc-edit" style="display:none;">
+        <div id="repoDescriptionEdit" class="repo-desc-edit hidden-ui;">
           <textarea id="repoDescInput" rows="3" class="desc-input"></textarea>
           <button id="saveRepoDescBtn" type="button" class="ghost" data-i18n="save">保存</button>
           <button id="cancelRepoDescBtn" type="button" class="ghost" data-i18n="cancel">取消</button>
         </div>
         <div id="summary" class="summary"></div>
-        <div id="configDetails" class="config-details" style="display:none;margin-top:12px;"></div>
+        <div id="configDetails" class="config-details hidden-ui" style="margin-top:12px;"></div>
         <div id="manifestFields" style="margin-top:12px;"></div>
         <div id="platforms" class="platforms"></div>
-        <div class="raw-manifest" id="rawManifest" style="display:none">
+        <div class="raw-manifest hidden-ui" id="rawManifest">
           <h4 data-i18n="rawJson" style="margin:8px 0 6px;font-size:14px;color:var(--muted)">原始 JSON</h4>
           <pre id="manifest" class="manifest">{}</pre>
         </div>

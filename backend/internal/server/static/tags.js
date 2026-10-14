@@ -18,7 +18,7 @@ function renderTags() {
 function updateTagBulkBar() {
   const count = state.selectedTags.size;
   el('selectedTagCount').textContent = t('selectedCount', {count});
-  el('selectedTagCount').style.display = count === 0 ? 'none' : '';
+  el('selectedTagCount').classList.toggle('hidden-ui', count === 0);
   el('deleteSelectedTagsBtn').disabled = count === 0 || !canWriteRepo(state.selectedRepo);
 }
 async function selectTag(tag) {
@@ -30,12 +30,12 @@ async function selectTag(tag) {
   // stale entry in state.selectedTags would make the next bulk delete silently
   // include a tag the user checked earlier and then navigated away from.
   state.selectedTags.clear();
-  state.selectedTag = tag; const refEl = el('selectedRef'); refEl.textContent = `${state.selectedRepo}:${tag}`; refEl.style.display = '';
+  state.selectedTag = tag; const refEl = el('selectedRef'); refEl.textContent = `${state.selectedRepo}:${tag}`; refEl.classList.remove('hidden-ui');
   const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/manifests/${encodeURIComponent(tag)}`);
   state.manifest = data.manifest; state.digest = data.digest || ''; state.artifactType = data.artifactType || '';
   manifestEl.textContent = JSON.stringify(data.manifest, null, 2); renderSummary(data); renderPlatforms(data.manifest);
   el('favoriteBtn').disabled = false;
-  const rm = el('rawManifest'); if (rm) rm.style.display = '';
+  const rm = el('rawManifest'); if (rm) rm.classList.remove('hidden-ui');
   renderTags(); await refreshSidebars();
 }
 function renderArtifactType(data) {
@@ -47,7 +47,7 @@ function renderArtifactType(data) {
 
 function renderConfigDetails(data, totalSize) {
   const cfg = data.config;
-  if (!cfg) { el('configDetails').style.display = 'none'; return; }
+  if (!cfg) { el('configDetails').classList.add('hidden-ui'); return; }
   let html = '';
   // Image Config basics - 1 column
   html += `<div class="config-section"><b>${t('imageConfig')}</b><div class="summary-grid" style="margin-top:6px;grid-template-columns:1fr">`;
@@ -86,7 +86,7 @@ function renderConfigDetails(data, totalSize) {
     html += '</div></div>';
   }
   el('configDetails').innerHTML = html;
-  el('configDetails').style.display = 'block';
+  el('configDetails').classList.remove('hidden-ui');
 }
 
 function renderManifestFields(data) {
@@ -181,7 +181,7 @@ function renderPlatforms(manifest) {
   }
   platformsEl.innerHTML = html;
 }
-function clearDetails() { const refEl = el('selectedRef'); refEl.textContent = t('selectTag'); refEl.style.display = 'none'; el('favoriteBtn').disabled = true; summaryEl.innerHTML = ''; platformsEl.innerHTML = ''; manifestEl.textContent = '{}'; const rm = el('rawManifest'); if (rm) rm.style.display = 'none'; const mf = el('manifestFields'); if (mf) mf.innerHTML = ''; const cd = el('configDetails'); if (cd) cd.style.display = 'none'; state.artifactType = ''; }
+function clearDetails() { const refEl = el('selectedRef'); refEl.textContent = t('selectTag'); refEl.classList.add('hidden-ui'); el('favoriteBtn').disabled = true; summaryEl.innerHTML = ''; platformsEl.innerHTML = ''; manifestEl.textContent = '{}'; const rm = el('rawManifest'); if (rm) rm.classList.add('hidden-ui'); const mf = el('manifestFields'); if (mf) mf.innerHTML = ''; const cd = el('configDetails'); if (cd) cd.classList.add('hidden-ui'); state.artifactType = ''; }
 async function manifestDigestForTag(tag) {
   if (tag === state.selectedTag && state.digest) return state.digest;
   const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/manifests/${encodeURIComponent(tag)}`);
