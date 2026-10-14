@@ -80,15 +80,12 @@ async function deleteCurrent() {
   if (!state.selectedRepo || !state.selectedTag) return;
   await deleteTags([state.selectedTag]);
 }
-async function deleteSelectedRepo() {
-  if (!state.selectedRepo) { toast(t('noRepoSelected'), true); return; }
-  if (!state.tags.length) await loadTags();
-  const ok = await deleteTags([...state.tags]);
-  if (!ok) return;
-  state.selectedRepo = ''; state.tags = []; state.selectedTags.clear(); el('selectedRepo').textContent = t('selectImage'); updateRepoActions(); await loadRepos(true);
-}
-async function deleteNamespace() {
-  const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : el('namespaceFilter').value;
+// Deleting a whole namespace is a much broader action than the repo list's
+// "✕ 删除" button implies, so it is no longer reachable from there. It stays
+// here as an explicit helper for callers that have already confirmed the
+// namespace scope.
+async function deleteNamespace(nsOverride) {
+  const ns = nsOverride || (state.selectedRepo ? namespaceOf(state.selectedRepo) : el('namespaceFilter').value);
   if (!ns || ns === t('root')) { toast(t('noRepoSelected'), true); return; }
   // Only namespaces the user can actually write to; the server rejects the
   // rest with 403.

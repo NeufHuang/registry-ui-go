@@ -105,7 +105,28 @@ el('deleteSelectedReposBtn').onclick = async () => {
     state.selectedRepos.clear(); updateRepoBulkBar();
     state.selectedRepo = ''; state.tags = []; state.selectedTags.clear(); el('selectedRepo').textContent = t('selectImage'); updateRepoActions(); await loadRepos(true);
   } else {
-    try { await deleteNamespace(); } catch(e) { toast(e.message, true); }
+    // Nothing checkbox-selected: falling through to "delete the whole
+    // namespace" made a single mis-click destroy every repo in it. Ask for
+    // the explicit repo first and delete just that one.
+    const repo = state.selectedRepo;
+    if (!repo) { toast(t('noRepoSelected'), true); return; }
+    if (!canWriteRepo(repo)) { toast(t('noPermission'), true); return; }
+    const ok = await openDeleteConfirm({
+      title: t('deleteConfirmTitle'),
+      message: t('deleteRepoConfirm', {repo}),
+      expected: repo,
+    });
+    if (ok !== repo) return;
+    try {
+      const {data} = await api(`/api/repositories/${encodeRepo(repo)}/tags`);
+      let deleted = 0;
+      for (const tag of (data.tags || [])) {
+        const d = await manifestDigestForTagRef(repo, tag);
+        if (d) { await api(`/api/repositories/${encodeRepo(repo)}/manifests/${encodeURIComponent(d)}`, {method:'DELETE'}); deleted++; toast(`${t('delete')} ${deleted}...`, false, true); }
+      }
+      toast(`${t('deleteSent')} (${deleted} digest)`);
+    } catch(e) { toast(e.message, true); }
+    state.selectedRepo = ''; state.tags = []; state.selectedTags.clear(); el('selectedRepo').textContent = t('selectImage'); updateRepoActions(); await loadRepos(true);
   }
 };
 el('createRepoBtn').onclick = async () => {
