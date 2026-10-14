@@ -115,6 +115,9 @@ function canWriteRepo(repo) {
 }
 function canWriteNamespace(ns) {
   if (isAdminUser()) return true;
+  // The root namespace has no name in the backend, so a permission pattern
+  // can never match it; only admins may create repos there.
+  if (ns === ROOT_NAMESPACE) return false;
   return (state.permissions || []).some(p => p.canWrite && namespaceMatches(p.namespacePattern, ns));
 }
 // applyPermissionsUI hides controls an authenticated non-admin cannot use, so
@@ -137,6 +140,8 @@ function applyI18n() {
   const langBtn = el('languageToggleBtn'); if (langBtn) langBtn.textContent = lang === 'en' ? '中' : 'EN';
   const all = el('namespaceFilter')?.querySelector('option[value=""]');
   if (all) all.textContent = t('allNamespaces');
+  // Re-render the namespace picker so the root entry picks up the new label.
+  if (typeof renderNamespaces === 'function') renderNamespaces();
   updateStatusDetail();
 }
 function applyTheme() { document.documentElement.dataset.theme = state.settings.theme || 'dark'; const btn = el('themeToggleBtn'); if (btn) btn.textContent = (state.settings.theme || 'dark') === 'dark' ? '☀' : '◐'; }
@@ -200,7 +205,15 @@ function fieldRow(k, v, copyKind='') {
   const btn = copyKind ? `<button class="inline-copy" data-copy="${esc(copyKind)}" title="Copy" aria-label="Copy">⧉</button>` : '';
   return `<div class="field-row"><b>${esc(k)}</b><code>${esc(v || '-')}</code>${btn}</div>`;
 }
-function namespaceOf(repo) { const i = repo.indexOf('/'); return i > 0 ? repo.slice(0, i) : t('root'); }
+// ROOT_NAMESPACE is the sentinel value used for repositories that live in the
+// root namespace (single-segment names such as "alpine"). The backend stores
+// that namespace as the empty string, so the UI must not identify it by its
+// translated label: switching language would silently change the filter key
+// and break permission matching for restricted users.
+const ROOT_NAMESPACE = 'root';
+function namespaceOf(repo) { const i = repo.indexOf('/'); return i > 0 ? repo.slice(0, i) : ROOT_NAMESPACE; }
+// namespaceLabel renders the value used in the picker and in messages.
+function namespaceLabel(ns) { return ns === ROOT_NAMESPACE ? t('root') : ns; }
 function imageNameInNamespace(repo) { const i = repo.indexOf('/'); return i > 0 ? repo.slice(i + 1) : repo; }
 function currentHost() { return window.location.host; }
 function pullCommand() {

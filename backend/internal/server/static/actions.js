@@ -85,19 +85,23 @@ async function deleteCurrent() {
 // here as an explicit helper for callers that have already confirmed the
 // namespace scope.
 async function deleteNamespace(nsOverride) {
-  const ns = nsOverride || (state.selectedRepo ? namespaceOf(state.selectedRepo) : el('namespaceFilter').value);
-  if (!ns || ns === t('root')) { toast(t('noRepoSelected'), true); return; }
+  let ns = nsOverride || (state.selectedRepo ? namespaceOf(state.selectedRepo) : el('namespaceFilter').value);
+  // The picker stores the root namespace as the sentinel, but the API expects
+  // the empty string the backend uses for it.
+  if (ns === ROOT_NAMESPACE) ns = '';
+  if (!ns) { toast(t('noRepoSelected'), true); return; }
   // Only namespaces the user can actually write to; the server rejects the
-  // rest with 403.
-  const repos = state.repos.filter(r => namespaceOf(r) === ns && canWriteRepo(r));
+  // rest with 403. The root namespace holds repos whose namespaceOf() is the
+  // sentinel, so compare against that.
+  const repos = state.repos.filter(r => namespaceOf(r) === (ns === '' ? ROOT_NAMESPACE : ns) && canWriteRepo(r));
   if (!repos.length) { toast(t('noPermission'), true); return; }
   const typed = await openDeleteConfirm({
     title: t('deleteConfirmTitle'),
-    message: t('deleteRepoConfirm', {repo: ns + '/* (' + repos.length + ' repos)'}),
+    message: t('deleteRepoConfirm', {repo: (ns === '' ? namespaceLabel(ROOT_NAMESPACE) : ns) + '/* (' + repos.length + ' repos)'}),
     details: repos.map(r => `- ${r}`).join('\n'),
-    expected: ns,
+    expected: ns === '' ? namespaceLabel(ROOT_NAMESPACE) : ns,
   });
-  if (typed !== ns) { toast(t('deleteMismatch'), true); return; }
+  if (typed !== (ns === '' ? namespaceLabel(ROOT_NAMESPACE) : ns)) { toast(t('deleteMismatch'), true); return; }
   let deleted = 0;
   for (const repo of repos) {
     try {

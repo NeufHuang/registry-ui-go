@@ -63,7 +63,7 @@ async function fetchAllNamespaces() {
     const {data} = await api('/api/namespaces');
     names = (data.namespaces || []).map(n => n.name);
   } catch (e) { console.warn('fetchAllNamespaces: failed to load namespaces', e); }
-  const catalogNs = [...new Set(state.repos.map(namespaceOf))].filter(n => n && n !== t('root'));
+  const catalogNs = [...new Set(state.repos.map(namespaceOf))].filter(n => n && n !== ROOT_NAMESPACE);
   return [...new Set([...names, ...catalogNs])].sort();
 }
 

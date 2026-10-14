@@ -17,12 +17,15 @@ function renderNamespaces() {
   const sel = el('namespaceFilter'); const current = sel.value;
   const catalogNs = state.repos.map(namespaceOf);
   let allNs = [...new Set([...state.namespaces, ...catalogNs])].sort();
-  allNs = allNs.map(ns => ns === '' ? t('root') : ns);
-  allNs = [...new Set(allNs)].sort();
+  // Keep the root namespace as the raw sentinel here and only translate it when
+  // rendering the option text; using the translated label as the value made the
+  // filter key (and the permission check below) depend on the active language.
   if (state.user && !state.user.isAdmin && state.permissions.length > 0) {
-    allNs = allNs.filter(ns => state.permissions.some(p => p.canRead && (ns === p.namespacePattern || ns.startsWith(p.namespacePattern + '/'))));
+    allNs = allNs.filter(ns => ns === ROOT_NAMESPACE
+      ? state.permissions.some(p => p.canRead && p.namespacePattern === '')
+      : state.permissions.some(p => p.canRead && (ns === p.namespacePattern || ns.startsWith(p.namespacePattern + '/'))));
   }
-  sel.innerHTML = `<option value="">${esc(t('allNamespaces'))}</option>` + allNs.map(g => `<option value="${esc(g)}">${esc(g === t('root') ? g : '/' + g)}</option>`).join('');
+  sel.innerHTML = `<option value="">${esc(t('allNamespaces'))}</option>` + allNs.map(ns => `<option value="${esc(ns)}">${esc(namespaceLabel(ns))}</option>`).join('');
   if (current && allNs.includes(current)) sel.value = current; else if (!current) sel.value = ''; else if (allNs.length) sel.value = allNs[0];
 }
 function updateRepoBulkBar() {
@@ -81,7 +84,7 @@ function updateRepoActions() {
     ? selected.some(canWriteRepo)
     : (state.selectedRepo ? canWriteRepo(state.selectedRepo) : true);
   el('deleteSelectedReposBtn').disabled = !canAct;
-  el('createRepoBtn').disabled = !ns || ns === t('root') || !canWriteNamespace(ns);
+  el('createRepoBtn').disabled = !ns || ns === ROOT_NAMESPACE || !canWriteNamespace(ns);
   el('createNamespaceBtn').disabled = !isAdminUser();
   el('tagSettingsBtn').disabled = !state.selectedRepo || !canWriteRepo(state.selectedRepo);
 }

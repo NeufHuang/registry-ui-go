@@ -131,7 +131,7 @@ el('deleteSelectedReposBtn').onclick = async () => {
 };
 el('createRepoBtn').onclick = async () => {
   const ns = el('namespaceFilter').value || (state.selectedRepo ? namespaceOf(state.selectedRepo) : '');
-  if (!ns || ns === t('root')) { toast(t('noRepoSelected'), true); return; }
+  if (!ns || ns === ROOT_NAMESPACE) { toast(t('noRepoSelected'), true); return; }
   if (!canWriteNamespace(ns)) { toast(t('noPermission'), true); return; }
   const ok = await openFormDialog({
     title: t('createRepo'),
