@@ -32,7 +32,7 @@ const i18n = {
     systemOverview: '系统概览',
     artifactType: 'Artifact Type', imageConfig: 'Image Config', created: 'Created', entrypoint: 'Entrypoint', cmd: 'Cmd', env: 'Env', exposedPorts: 'Exposed Ports', volumes: 'Volumes', labels: 'Labels', workingDir: 'Working Dir', os: 'OS', arch: 'Arch',
     repoImmutable: '不可变仓库（所有 tag 受保护）', immutableOff: '设为不可变', immutableOn: '取消不可变', immutableRulesHelp: '规则支持 * ? 通配符（如 release-* 匹配 release-1.0）。仅在“规则匹配”模式下生效；“不可变”模式保护所有 tag，“允许覆盖”不检查规则。仅拦截 push 覆盖，不影响删除。',
-    configEmpty: '无配置',
+    configEmpty: '无配置', sessionExpired: '登录已过期，请重新登录',
   },
   en: {
     subtitle: 'Private Docker / OCI Registry management', settings: 'Settings', refresh: 'Refresh', directory: 'Repository', more: 'More', profile: 'Profile', logout: 'Logout',
@@ -67,6 +67,6 @@ const i18n = {
     systemOverview: 'System Overview',
     artifactType: 'Type', imageConfig: 'Image Config', created: 'Created', entrypoint: 'Entrypoint', cmd: 'Cmd', env: 'Env', exposedPorts: 'Ports', volumes: 'Volumes', labels: 'Labels', workingDir: 'Working Dir', os: 'OS', arch: 'Arch',
     repoImmutable: 'Immutable repo (all tags protected)', immutableOff: 'Make Immutable', immutableOn: 'Disable Immutable', immutableRulesHelp: 'Patterns support * ? wildcards (e.g. release-* matches release-1.0). Only applies in Rules mode; Immutable protects all tags, Allow Overwrite skips rules. Blocks push overwrite only, not deletion.',
-    configEmpty: 'No config',
+    configEmpty: 'No config', sessionExpired: 'Session expired, please log in again',
   }
 };

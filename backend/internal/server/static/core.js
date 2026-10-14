@@ -57,6 +57,14 @@ async function api(path, options = {}) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
+    // A 401 means the session is gone: bounce to the login page instead of
+    // letting every caller show a disconnected error toast.
+    if (handleAuthError(res.status, path)) {
+      const err = new Error(t('sessionExpired'));
+      err.code = 'sessionExpired';
+      err.status = res.status;
+      throw err;
+    }
     // `code` is the machine-readable identifier. Responses like
     // {"error":"gc_expired"} carry it in `error`, so accept both.
     const rawCode = data && typeof data === 'object' ? (data.code || data.error) : null;
@@ -67,6 +75,25 @@ async function api(path, options = {}) {
     throw err;
   }
   return { data, headers: res.headers, status: res.status };
+}
+
+// An expired or missing session used to surface as a raw error toast on every
+// call while the UI stayed half-initialized. Any 401 (except the initial
+// /api/user probe, which is what discovers the expired session) now redirects
+// to the login page once, preserving the current location for the return trip.
+function redirectToLogin() {
+  if (el('loginRedirecting')) return;
+  const marker = document.createElement('div');
+  marker.id = 'loginRedirecting';
+  marker.style.display = 'none';
+  document.body.appendChild(marker);
+  const next = encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.replace(`/login.html?next=${next}`);
+}
+function handleAuthError(status, path) {
+  if (status !== 401 || path.startsWith('/api/user')) return false;
+  redirectToLogin();
+  return true;
 }
 
 // authDisabled reports whether the deployment runs with AUTH_MODE=off: the
