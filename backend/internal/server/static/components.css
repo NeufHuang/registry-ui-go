@@ -1,4 +1,4 @@
-.summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.summary{display:flex;flex-direction:column;gap:8px}
 .card{border:1px solid var(--border);border-radius:12px;padding:10px;background:var(--panel2);min-width:0}
 .card b{display:block;color:var(--muted);font-size:12px}
 .card span{display:block;word-break:break-all;margin-top:4px}
@@ -6,11 +6,6 @@
 .toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;box-shadow:0 10px 30px var(--shadow);max-width:420px;z-index:300}
 .toast.err{border-color:var(--danger);color:var(--danger)}
 .hidden{display:none}
-.dialog{border:1px solid var(--border);border-radius:18px;background:var(--panel);color:var(--text);padding:18px;min-width:360px}
-.dialog::backdrop{background:rgba(0,0,0,.45)}
-.dialog form{display:flex;flex-direction:column;gap:12px}
-.dialog label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:13px}
-.dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:6px 0 0}
 .mini{border:1px solid var(--border);border-radius:10px;padding:8px;background:var(--panel2)}
 .mini b{display:block;font-size:13px}
 .mini small{display:block;color:var(--muted);word-break:break-all;margin-top:3px}
@@ -30,6 +25,9 @@ summary{cursor:pointer;color:var(--text);font-weight:700}
 .hidden-ui{display:none!important}
 .switch-row{display:flex;width:100%;flex-direction:row!important;align-items:center;justify-content:space-between;gap:14px;border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:var(--panel2);color:var(--text)!important}
 .switch-row input{position:absolute;opacity:0;pointer-events:none}
+/* Keep the toggle operable without a mouse: the hidden checkbox cannot receive
+   focus, so the wrapping label gets :focus-within to show the keyboard ring. */
+.switch-row:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
 .switch-pill{position:relative;display:inline-flex;width:48px;height:28px;border-radius:999px;background:var(--border);transition:.18s ease;flex:0 0 auto}
 .switch-pill::after{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.22);transition:.18s ease}
 .switch-row input:checked+.switch-pill{background:var(--accent)}
@@ -60,7 +58,9 @@ summary{cursor:pointer;color:var(--text);font-weight:700}
 .details .panel-head h2{letter-spacing:.02em}
 .tag-bulk-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:12px;background:color-mix(in srgb,var(--danger) 10%,var(--panel2));color:var(--text)}
 button.small{padding:5px 8px;border-radius:8px;font-size:12px}
-.tag-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:0}
+/* The modal stylesheet redefines .tag-item as an auto minmax(0,1fr) grid for the
+   checkbox + .tag-full rows the tag list actually renders; this 1fr auto rule
+   matched nothing and is kept only for reference in modal.css. */
 .tag-check{display:flex;align-items:center;gap:10px;padding:9px 10px;min-width:0;cursor:pointer}
 .tag-check input{width:16px;height:16px;flex:0 0 auto;accent-color:var(--accent)}
 .tag-item.active,.tag-item.checked{border-color:color-mix(in srgb,var(--accent) 65%,var(--border));background:color-mix(in srgb,var(--accent) 10%,var(--panel2))}
@@ -74,6 +74,11 @@ button.small{padding:5px 8px;border-radius:8px;font-size:12px}
 .manifest-item-meta{display:flex;flex-direction:column;gap:4px;align-items:flex-end;color:var(--muted);font-size:12px;max-width:240px}
 .manifest-item-meta span{max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pill{display:inline-flex;width:max-content;padding:2px 7px;border-radius:999px;background:color-mix(in srgb,var(--accent) 14%,var(--input));color:var(--accent);font-size:12px}
+/* Keyboard focus must stay visible everywhere, not only on inputs. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition:none!important;animation:none!important}
+}
 @media(max-width:1100px){.layout{grid-template-columns:1fr;height:auto}
 .panel{min-height:260px}
 .topbar{position:static;align-items:flex-start;flex-direction:column}
