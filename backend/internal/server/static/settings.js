@@ -147,17 +147,24 @@ function updateStatusDetail() {
   const badge = el('registryStatusBadge');
   const versionEl = el('registryVersion');
   if (!detail || !badge) return;
+  // The detail line is only meaningful when there is something to say; it
+  // used to stay hidden behind an inline display:none in the markup so the
+  // healthy path never revealed the API version at all.
+  const showDetail = (text) => {
+    if (text) { detail.textContent = text; detail.style.display = ''; }
+    else { detail.textContent = ''; detail.style.display = 'none'; }
+  };
   if (!state.health) {
     badge.textContent = '-';
     badge.className = 'status-badge muted';
-    detail.textContent = '-';
+    showDetail('');
     if (versionEl) versionEl.textContent = '';
     return;
   }
   if (state.health.ok) {
     badge.textContent = `OK ${state.health.registryStatus || 200}`;
     badge.className = 'status-badge ok';
-    detail.textContent = state.health.dockerDistributionApiVersion || '';
+    showDetail(state.health.dockerDistributionApiVersion || '');
     const repoEl = el('statusRepoCount');
     const tagEl = el('statusTagCount');
     if (repoEl) repoEl.textContent = state.health.repoCount || '0';
@@ -171,7 +178,7 @@ function updateStatusDetail() {
   }
   badge.textContent = `ERR ${state.health.registryStatus || ''}`.trim();
   badge.className = 'status-badge err';
-  detail.textContent = state.health.error || 'Registry health check failed';
+  showDetail(state.health.error || 'Registry health check failed');
   if (versionEl) versionEl.textContent = '';
 }
 async function checkHealth() {
