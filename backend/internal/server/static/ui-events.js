@@ -84,8 +84,19 @@ function normalizeSettingsSize() {
   panel.style.visibility = '';
 }
 function showModal(id) {
-  el(id).classList.remove('hidden-ui');
+  const overlay = el(id);
+  overlay.classList.remove('hidden-ui');
   document.body.style.overflow = 'hidden';
+  // Announce the dialog to screen readers and move focus inside it so keyboard
+  // users are not left behind on the page that opened the modal.
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  const panel = overlay.querySelector('.modal-panel');
+  if (panel) {
+    if (!panel.hasAttribute('tabindex')) panel.tabIndex = -1;
+    panel.focus({preventScroll: true});
+  }
+  overlay._prevFocus = document.activeElement;
 }
 function closeModal(id) {
   // While a forced password change is pending the server blocks every other
@@ -96,8 +107,14 @@ function closeModal(id) {
     toast(t('mustChangePassword'), true, true);
     return;
   }
-  el(id).classList.add('hidden-ui');
+  const overlay = el(id);
+  overlay.classList.add('hidden-ui');
   document.body.style.overflow = '';
+  overlay.removeAttribute('role');
+  overlay.removeAttribute('aria-modal');
+  const prev = overlay._prevFocus;
+  if (prev && typeof prev.focus === 'function') prev.focus({preventScroll: true});
+  overlay._prevFocus = null;
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
