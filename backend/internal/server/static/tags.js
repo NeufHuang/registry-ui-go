@@ -26,6 +26,10 @@ async function selectTag(tag) {
     state.selectedTag = ''; clearDetails(); renderTags(); await refreshSidebars();
     return;
   }
+  // Clicking a row selects exactly that tag for the detail panel; leaving a
+  // stale entry in state.selectedTags would make the next bulk delete silently
+  // include a tag the user checked earlier and then navigated away from.
+  state.selectedTags.clear();
   state.selectedTag = tag; const refEl = el('selectedRef'); refEl.textContent = `${state.selectedRepo}:${tag}`; refEl.style.display = '';
   const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/manifests/${encodeURIComponent(tag)}`);
   state.manifest = data.manifest; state.digest = data.digest || ''; state.artifactType = data.artifactType || '';

@@ -58,7 +58,6 @@ async function checkRepoProtection(repo) {
     const isImmutable = data.protectionMode === 'immutable';
     const icon = el('tagImmutableIcon');
     if (icon) icon.classList.toggle('hidden-ui', !isImmutable);
-    state._repoImmutable = isImmutable;
   } catch (e) { console.warn('checkRepoProtection: failed to load stats', e); const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); }
 }
 
