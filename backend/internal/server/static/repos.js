@@ -68,6 +68,7 @@ async function selectRepo(repo) {
   if (repo === state.selectedRepo) {
     state.selectedRepo = ''; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = [];
     el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderRepos(); renderTags(); updateRepoActions();
+    if (typeof applyRepoDescriptionPermissions === 'function') applyRepoDescriptionPermissions();
     const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui');
     await refreshSidebars();
     return;
@@ -75,6 +76,7 @@ async function selectRepo(repo) {
   state.selectedRepo = repo; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = [];
   el('selectedRepo').textContent = repo; clearDetails(); renderRepos(); updateRepoActions(); await loadTags(); await refreshSidebars();
   await loadRepoDescription(repo);
+  if (typeof applyRepoDescriptionPermissions === 'function') applyRepoDescriptionPermissions();
   await checkRepoProtection(repo);
 }
 function updateRepoActions() {

@@ -309,10 +309,20 @@ async function loadTokens() {
   try {
     const {data} = await api('/api/admin/tokens');
     const list = el('tokenList');
-    list.innerHTML = (data.tokens || []).map(t =>
-      `<div class="compact-card"><div class="cc-text"><strong>${esc(t.name)}</strong><small>${esc(t.description||'')} · prefix: ${esc(t.tokenPrefix)}${t.expiresAt ? ' · expires: '+esc(t.expiresAt) : ''}</small></div><button class="ghost danger del-token" data-id="${t.id}" type="button">×</button></div>`
+    list.innerHTML = (data.tokens || []).map(tk =>
+      `<div class="compact-card"><div class="cc-text"><strong>${esc(tk.name)}</strong><small>${esc(tk.description||'')} · prefix: ${esc(tk.tokenPrefix)}${tk.expiresAt ? ' · expires: '+esc(tk.expiresAt) : ''}</small></div><button class="ghost danger del-token" data-id="${tk.id}" type="button">×</button></div>`
     ).join('') || `<div class="hint">-</div>`;
     list.querySelectorAll('.del-token').forEach(b => b.onclick = async () => {
+      // Revoking is irreversible and the token is not recoverable afterwards,
+      // so it needs the same confirmation the user and webhook deletes have.
+      const tk = (data.tokens || []).find(x => String(x.id) === b.dataset.id);
+      const ok = await openDeleteConfirm({
+        title: t('revokeToken') || 'Revoke Token',
+        message: t('confirmRevokeToken') || 'Revoke this token? Clients using it will stop working.',
+        details: tk ? tk.name : '',
+        expected: 'DELETE',
+      });
+      if (!ok) return;
       await api(`/api/admin/tokens/${b.dataset.id}`, {method:'DELETE'});
       toast(t('tokenRevoked')); await loadTokens();
     });
@@ -456,6 +466,15 @@ async function loadRepoDescription(repo) {
   } catch (e) { console.warn('loadRepoDescription: failed', e); el('repoDescription').style.display = 'none'; }
 }
 
+// The edit affordance is only offered to users who can actually write the
+// repository: the server answers 403 for everyone else, and offering a
+// save button that is guaranteed to fail is worse than not offering it.
+function applyRepoDescriptionPermissions() {
+  const btn = el('editRepoDescBtn');
+  if (btn) btn.style.display = canWriteRepo(state.selectedRepo) ? '' : 'none';
+  if (!canWriteRepo(state.selectedRepo)) el('repoDescriptionEdit').style.display = 'none';
+}
+
 function simpleMarkdown(text) {
   // Escape first to prevent XSS, then apply formatting on the safe text.
   // Each replacement only introduces known-safe HTML tags; the content
@@ -501,7 +520,10 @@ el('addTokenBtn').onclick = () => showCreateTokenDialog();
 el('addWebhookBtn').onclick = () => showAddWebhookDialog();
 el('repoStatsDetails')?.addEventListener('toggle', (e) => { if (e.target.open) loadStats(); });
 const _edb = el('editRepoDescBtn'); if (_edb) _edb.onclick = () => showRepoDescriptionEdit();
-const _sdb = el('saveRepoDescBtn'); if (_sdb) _sdb.onclick = () => saveRepoDescription();
+const _sdb = el('saveRepoDescBtn'); if (_sdb) _sdb.onclick = async () => {
+  if (!canWriteRepo(state.selectedRepo)) { toast(t('noPermission'), true); return; }
+  try { await saveRepoDescription(); } catch(e) { toast(e.message, true); }
+};
 const _cdb = el('cancelRepoDescBtn'); if (_cdb) _cdb.onclick = () => { el('repoDescriptionEdit').style.display = 'none'; loadRepoDescription(state.selectedRepo); };
 
 // Expose to global scope for inline onclick handlers in HTML
