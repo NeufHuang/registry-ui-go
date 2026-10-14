@@ -121,11 +121,11 @@
   <body>
     <div class="login-page">
       <div class="login-bg" id="loginBg"></div>
-      <button class="theme-toggle" id="themeToggle">☀️</button>
+      <button class="theme-toggle" id="themeToggle" type="button">☀️</button>
       <div class="login-card">
         <div class="login-header">
-          <h1>Registry UI</h1>
-          <p>请登录以继续</p>
+          <h1 id="loginTitle">Registry UI</h1>
+          <p id="loginSubtitle">请登录以继续</p>
         </div>
         <form id="loginForm">
           <div class="form-group">
@@ -143,31 +143,74 @@
     </div>
 
     <script>
-      // Theme handling
-      function applyTheme() {
-        const theme = localStorage.getItem('theme') || 'dark';
+      // The theme used to be read from localStorage here while the main app
+      // persists it server-side, so the login page could show a theme that
+      // disagreed with the app the user lands on. It now comes from
+      // /api/settings, with localStorage only as a fallback before that
+      // response arrives.
+      const titleEl = document.getElementById('loginTitle');
+      const subtitleEl = document.getElementById('loginSubtitle');
+      const themeBtn = document.getElementById('themeToggle');
+      const nextParam = new URLSearchParams(location.search).get('next');
+
+      function applyTheme(theme) {
         document.documentElement.dataset.theme = theme;
-        document.getElementById('themeToggle').textContent = theme === 'dark' ? '☀️' : '🌙';
+        themeBtn.textContent = theme === 'dark' ? '☀️' : '🌙';
+        themeBtn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
       }
-      applyTheme();
-      document.getElementById('themeToggle').onclick = () => {
-        const current = document.documentElement.dataset.theme;
-        const next = current === 'dark' ? 'light' : 'dark';
-        document.documentElement.dataset.theme = next;
+      applyTheme(localStorage.getItem('theme') || 'dark');
+
+      fetch('/api/settings')
+        .then(res => res.ok ? res.json() : null)
+        .then(s => {
+          if (!s) return;
+          const theme = s.theme === 'light' ? 'light' : 'dark';
+          localStorage.setItem('theme', theme);
+          applyTheme(theme);
+          const title = (s.appTitle || '').trim();
+          const subtitle = (s.appSubtitle || '').trim();
+          if (title) { titleEl.textContent = title; document.title = `${title} - 登录`; }
+          if (subtitle) subtitleEl.textContent = subtitle;
+        })
+        .catch(() => { /* keep the localStorage/default theme */ });
+
+      themeBtn.onclick = () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
         localStorage.setItem('theme', next);
-        document.getElementById('themeToggle').textContent = next === 'dark' ? '☀️' : '🌙';
       };
 
-      // Try to load custom background
-      fetch('/uploads/login-bg.jpg')
-        .then(res => {
-          if (res.ok) {
-            document.getElementById('loginBg').style.backgroundImage = 'url(/uploads/login-bg.jpg)';
-          }
+      // Try to load custom background. A missing file is the common case, so
+      // the probe result is cached in sessionStorage to avoid a 404 per visit.
+      const bgKey = 'loginBgMissing';
+      if (!sessionStorage.getItem(bgKey)) {
+        fetch('/uploads/login-bg.jpg', {method: 'GET'})
+          .then(res => {
+            if (res.ok) document.getElementById('loginBg').style.backgroundImage = 'url(/uploads/login-bg.jpg)';
+            else sessionStorage.setItem(bgKey, '1');
+          })
+          .catch(() => { sessionStorage.setItem(bgKey, '1'); });
+      }
+
+      // An authenticated visitor hitting /login.html should land in the app
+      // instead of being asked to log in again.
+      fetch('/api/user')
+        .then(res => res.ok ? res.json() : null)
+        .then(u => {
+          if (u && u.username) window.location.replace(safeNext());
         })
-        .catch(() => {
-          // Fallback - no custom background
-        });
+        .catch(() => { /* stay on the login form */ });
+
+      function safeNext() {
+        // Only same-origin relative paths, so ?next= cannot be used as an
+        // open redirect.
+        if (!nextParam) return '/';
+        try {
+          const url = new URL(nextParam, location.origin);
+          if (url.origin !== location.origin) return '/';
+          return url.pathname + url.search;
+        } catch { return '/'; }
+      }
 
       // Login form handling
       document.getElementById('loginForm').onsubmit = async (e) => {
@@ -189,16 +232,17 @@
           });
 
           if (res.ok) {
-            window.location.href = '/';
+            window.location.replace(safeNext());
           } else {
             const data = await res.json().catch(() => ({}));
             errorEl.textContent = data.error || '登录失败，请检查用户名和密码';
             errorEl.classList.add('show');
+            btn.disabled = false;
+            btn.textContent = '登录';
           }
         } catch (err) {
           errorEl.textContent = '网络错误，请重试';
           errorEl.classList.add('show');
-        } finally {
           btn.disabled = false;
           btn.textContent = '登录';
         }
