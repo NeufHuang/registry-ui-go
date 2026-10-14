@@ -143,6 +143,10 @@ dialog { display: none }
   flex-direction: column;
   gap: 6px;
 }
+.ms-panel.ms-panel-flip {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
 .ms-panel.hidden {
   display: none;
 }

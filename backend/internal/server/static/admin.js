@@ -123,7 +123,25 @@ function buildMultiSelect(opts) {
   search.oninput = () => render(search.value);
   btn.onclick = () => {
     panel.classList.toggle('hidden');
-    if (!panel.classList.contains('hidden')) { search.value = ''; render(); search.focus(); }
+    if (!panel.classList.contains('hidden')) {
+      search.value = ''; render(); search.focus();
+      positionPanel();
+    }
+  };
+  // The panel is absolutely positioned inside the settings modal's scrolling
+  // body, so for a user card near the bottom it was clipped by the scroll
+  // container. Flip it above the button when there is no room below and pull
+  // it into view either way.
+  const positionPanel = () => {
+    panel.classList.remove('ms-panel-flip');
+    const wrapRect = wrap.getBoundingClientRect();
+    const scroller = panel.closest('.modal-scroll, .modal-body');
+    const limit = scroller ? scroller.getBoundingClientRect().bottom : window.innerHeight;
+    const panelH = panel.offsetHeight || 260;
+    if (wrapRect.bottom + 4 + panelH > limit && wrapRect.top - 4 - panelH > (scroller ? scroller.getBoundingClientRect().top : 0)) {
+      panel.classList.add('ms-panel-flip');
+    }
+    panel.scrollIntoView({block: 'nearest'});
   };
   panel.appendChild(search);
   panel.appendChild(list);
