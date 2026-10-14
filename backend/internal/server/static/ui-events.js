@@ -88,11 +88,26 @@ function showModal(id) {
   document.body.style.overflow = 'hidden';
 }
 function closeModal(id) {
+  // While a forced password change is pending the server blocks every other
+  // endpoint, so the app is deliberately left uninitialized. Dismissing the
+  // profile modal would strand the user on a blank UI with no way back, so
+  // the close is refused and the modal is shown again.
+  if (id === 'profileModal' && state.mustChangePassword) {
+    toast(t('mustChangePassword'), true, true);
+    return;
+  }
   el(id).classList.add('hidden-ui');
   document.body.style.overflow = '';
 }
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') document.querySelectorAll('.modal-overlay:not(.hidden-ui)').forEach(m => closeModal(m.id));
+  if (e.key === 'Escape') {
+    // Escape must not bypass the forced password change either.
+    if (state.mustChangePassword && el('profileModal') && !el('profileModal').classList.contains('hidden-ui')) {
+      toast(t('mustChangePassword'), true, true);
+      return;
+    }
+    document.querySelectorAll('.modal-overlay:not(.hidden-ui)').forEach(m => closeModal(m.id));
+  }
 });
 
 el('userMenuBtn').onclick = (e) => { e.stopPropagation(); const d=el('userDropdown'); d.classList.toggle('hidden-ui'); el('userMenuBtn').setAttribute('aria-expanded', String(!d.classList.contains('hidden-ui'))); };

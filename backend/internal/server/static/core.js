@@ -18,6 +18,10 @@ const state = {
   health: null,
   user: { username: 'admin', avatar: '' },
   permissions: [],
+  // True while the server refuses every non-exempt endpoint because the
+  // account still has its default password. While set, the profile modal is
+  // mandatory: it cannot be dismissed and the app stays uninitialized.
+  mustChangePassword: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -176,6 +180,7 @@ async function loadUser() {
   applyUser();
   // Depends only on identity, so it is applied before the possible early return.
   applyPermissionsUI();
+  state.mustChangePassword = !!data.mustChangePassword;
   if (data.mustChangePassword) {
     toast(t('mustChangePassword'), true, true);
     return;
