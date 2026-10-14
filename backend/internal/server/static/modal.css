@@ -318,6 +318,7 @@ dialog { display: none }
 .compact-card .cc-text strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .compact-card .cc-text small{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .compact-card button{flex:0 0 auto;white-space:nowrap}
+.compact-card .cc-actions{flex:0 0 auto;display:flex;align-items:center;gap:6px}
 #immutableRuleList,#tokenList,#webhookList{max-height:180px;overflow-y:auto;scrollbar-width:none}
 #immutableRuleList::-webkit-scrollbar,#tokenList::-webkit-scrollbar,#webhookList::-webkit-scrollbar{width:0;height:0}
 .status-btn.ok{background:rgba(66,211,146,.15);border-color:rgba(66,211,146,.4);color:var(--ok)}

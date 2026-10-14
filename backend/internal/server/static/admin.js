@@ -347,35 +347,59 @@ async function loadWebhooks() {
     const {data} = await api('/api/admin/webhooks');
     const list = el('webhookList');
     list.innerHTML = (data.webhooks || []).map(w =>
-      `<div class="compact-card"><div class="cc-text"><strong>${esc(w.url)}</strong><small>events: ${esc(w.events)} · ${w.enabled ? 'enabled' : 'disabled'}</small></div><button class="ghost danger del-webhook" data-id="${w.id}" type="button">×</button></div>`
+      `<div class="compact-card"><div class="cc-text"><strong>${esc(w.url)}</strong><small>events: ${esc(w.events)} · ${w.enabled ? t('enabled') : t('disabled')}${w.secretHeader ? ' · ' + t('webhookSecret') : ''}</small></div><div class="cc-actions"><button class="ghost edit-webhook" data-id="${w.id}" type="button" title="${t('edit') || 'Edit'}">✎</button><button class="ghost danger del-webhook" data-id="${w.id}" type="button">×</button></div></div>`
     ).join('') || `<div class="hint">-</div>`;
+    list.querySelectorAll('.edit-webhook').forEach(b => b.onclick = async () => {
+      const w = (data.webhooks || []).find(h => String(h.id) === b.dataset.id);
+      if (w) showEditWebhookDialog(w);
+    });
     list.querySelectorAll('.del-webhook').forEach(b => b.onclick = async () => {
+      const w = (data.webhooks || []).find(h => String(h.id) === b.dataset.id);
+      const ok = await openDeleteConfirm({
+        title: t('deleteWebhook') || 'Delete Webhook',
+        message: t('confirmDeleteWebhook') || 'Delete this webhook?',
+        details: w ? w.url : '',
+        expected: 'DELETE',
+      });
+      if (!ok) return;
       await api(`/api/admin/webhooks/${b.dataset.id}`, {method:'DELETE'});
       toast(t('saved')); await loadWebhooks();
     });
   } catch(e) { el('webhookList').innerHTML = `<div class="hint error">${esc(e.message)}</div>`; }
 }
 
-async function showAddWebhookDialog() {
+// The add dialog doubles as the edit dialog: an existing hook is loaded into
+// the same fields and submitted with PUT. Previously webhooks could only be
+// created or deleted, never modified, and the enabled flag could not be
+// changed after creation.
+async function showWebhookDialog(hook) {
+  const editing = !!hook;
   const ok = await openFormDialog({
-    title: t('addWebhook'),
+    title: editing ? (t('editWebhook') || 'Edit Webhook') : t('addWebhook'),
     fields: [
-      {key: 'url', label: t('webhookUrl'), placeholder: 'https://example.com/hook'},
-      {key: 'secretHeader', label: t('webhookSecret'), placeholder: 'X-Hub-Signature:secret'},
-      {key: 'events', label: t('webhookEvents'), placeholder: 'push,delete,untag,restore', value: 'push,delete,untag,restore'},
+      {key: 'url', label: t('webhookUrl'), placeholder: 'https://example.com/hook', value: hook ? hook.url : ''},
+      {key: 'secretHeader', label: t('webhookSecret'), placeholder: 'X-Hub-Signature:secret', value: hook ? (hook.secretHeader || '') : ''},
+      {key: 'events', label: t('webhookEvents'), placeholder: 'push,delete,untag,restore', value: hook ? hook.events : 'push,delete,untag,restore'},
+      {key: 'enabled', label: t('webhookEnabled'), type: 'checkbox', checked: hook ? hook.enabled : true},
     ],
     submitLabel: t('save'),
     submit: async (v) => {
       const url = (v.url || '').trim();
-      if (!url) return {ok: false, error: 'url required'};
+      if (!url) return {ok: false, error: t('webhookUrlRequired') || 'url required'};
+      const body = JSON.stringify({url, secretHeader: v.secretHeader || '', events: v.events || 'push,delete,untag,restore', enabled: !!v.enabled});
       try {
-        await api('/api/admin/webhooks', {method:'POST', body: JSON.stringify({url, secretHeader: v.secretHeader || '', events: v.events || 'push,delete,untag,restore', enabled: true})});
+        if (editing) await api(`/api/admin/webhooks/${hook.id}`, {method:'PUT', body});
+        else await api('/api/admin/webhooks', {method:'POST', body});
         toast(t('saved')); await loadWebhooks();
         return {ok: true};
       } catch (e) { return {ok: false, error: e.message}; }
     },
   });
+  return ok;
 }
+function showEditWebhookDialog(hook) { return showWebhookDialog(hook); }
+
+async function showAddWebhookDialog() { return showWebhookDialog(null); }
 
 // ---- Repo Stats ----
 
