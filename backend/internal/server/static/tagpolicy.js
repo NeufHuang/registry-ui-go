@@ -84,7 +84,15 @@ el('refreshReposBtn').onclick = async () => {
     if (state.selectedRepo && typeof refreshTreeTags === 'function') await refreshTreeTags();
   } catch(e) { toast(e.message, true); }
 };
-el('deleteSelectedReposBtn').onclick = async () => {
+// One delete button for everything the tree can select: repositories (their
+// checkboxes) and tags (their checkboxes). The tag selection wins when present,
+// otherwise the repository selection decides what happens.
+el('deleteSelectedBtn').onclick = async () => {
+  // Tags take precedence: they are the more specific selection.
+  if (state.selectedTags.size > 0) {
+    try { await deleteTags([...state.selectedTags]); } catch(e) { toast(e.message, true); }
+    return;
+  }
   const all = [...state.selectedRepos];
   // Skip repos the user cannot write to instead of aborting the whole batch.
   const checked = all.filter(canWriteRepo);
@@ -137,7 +145,9 @@ el('deleteSelectedReposBtn').onclick = async () => {
   }
 };
 el('createRepoBtn').onclick = async () => {
-  const ns = el('namespaceFilter').value || (state.selectedRepo ? namespaceOf(state.selectedRepo) : '');
+  // The namespace filter is gone, so the namespace comes from the selected
+  // repository (createRepoBtn is only enabled when one is selected).
+  const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : '';
   if (!ns || ns === ROOT_NAMESPACE) { toast(t('noRepoSelected'), true); return; }
   if (!canWriteNamespace(ns)) { toast(t('noPermission'), true); return; }
   const ok = await openFormDialog({
@@ -175,8 +185,7 @@ el('createNamespaceBtn').onclick = async () => {
 });
 document.addEventListener('click', () => { document.querySelectorAll('[id$=Dropdown]').forEach(d => d.classList.add('hidden-ui')); });
 [].forEach.call(document.querySelectorAll('[id$=Dropdown]'), d => { d.addEventListener('click', e => e.stopPropagation()); });
-el('repoSearch').oninput = renderTreeView; el('namespaceFilter').onchange = () => { const ns = el('namespaceFilter').value; if (state.selectedRepo && ns && namespaceOf(state.selectedRepo) !== ns) { state.selectedRepo = ''; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = []; el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderTree(); const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); } renderTree(); updateRepoActions(); };
-el('deleteSelectedTagsBtn').onclick = async () => { try { await deleteTags([...state.selectedTags]); } catch(e) { toast(e.message, true); } };
+el('repoSearch').oninput = renderTreeView;
 el('favoriteBtn').onclick = async () => { try { await favoriteCurrent(); } catch(e) { toast(e.message, true); } };
 el('recentRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecent(); }; el('favoritesRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadFavorites(); }; el('auditRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadAudit(); }; el('recycleRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecycle(); };
 (async()=>{ try { await loadUser(); if (state.user && state.user.mustChangePassword) { showModal('profileModal'); toast(t('mustChangePassword'), true, true); return; } await loadSettings(); await checkHealth(); await loadRepos(true); await refreshSidebars(); } catch(e) { toast(e.message, true); } })();

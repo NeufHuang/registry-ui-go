@@ -45,9 +45,6 @@ function updateTagBulkBar() {
   const count = state.selectedTags.size;
   el('selectedTagCount').textContent = t('selectedCount', {count});
   el('selectedTagCount').classList.toggle('hidden-ui', count === 0);
-  // Tags are cached per repo (treeState.loaded), so the selected tags belong to
-  // the currently selected repo. Gate the bulk-delete button on it.
-  el('deleteSelectedTagsBtn').disabled = count === 0 || !canWriteRepo(state.selectedRepo);
 }
 async function selectTag(tag) {
   if (tag === state.selectedTag) {

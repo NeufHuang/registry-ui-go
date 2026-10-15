@@ -22,21 +22,10 @@ function renderRepos() {
   if (typeof renderTreeView === 'function') { renderTreeView(); return; }
   renderFlatRepos();
 }
-function renderNamespaces() {
-  const sel = el('namespaceFilter'); const current = sel.value;
-  const catalogNs = state.repos.map(namespaceOf);
-  let allNs = [...new Set([...state.namespaces, ...catalogNs])].sort();
-  // Keep the root namespace as the raw sentinel here and only translate it when
-  // rendering the option text; using the translated label as the value made the
-  // filter key (and the permission check below) depend on the active language.
-  if (state.user && !state.user.isAdmin && state.permissions.length > 0) {
-    allNs = allNs.filter(ns => ns === ROOT_NAMESPACE
-      ? state.permissions.some(p => p.canRead && p.namespacePattern === '')
-      : state.permissions.some(p => p.canRead && (ns === p.namespacePattern || ns.startsWith(p.namespacePattern + '/'))));
-  }
-  sel.innerHTML = `<option value="">${esc(t('allNamespaces'))}</option>` + allNs.map(ns => `<option value="${esc(ns)}">${esc(namespaceLabel(ns))}</option>`).join('');
-  if (current && allNs.includes(current)) sel.value = current; else if (!current) sel.value = ''; else if (allNs.length) sel.value = allNs[0];
-}
+// The namespace filter dropdown is gone; the tree groups every namespace as a
+// folder, so there is no picker to fill. applyI18n() still calls this on a
+// language switch, which re-renders the tree with the new labels.
+function renderNamespaces() { if (typeof renderTreeView === 'function') { renderTreeView(); return; } }
 function updateRepoBulkBar() {
   const count = state.selectedRepos.size;
   el('selectedRepoCount').textContent = t('selectedCount', {count});
@@ -46,8 +35,8 @@ function updateRepoBulkBar() {
 // Legacy flat list. Kept as a fallback in case tree.js fails to load; the
 // directory tree in tree.js is the normal rendering path.
 function renderFlatRepos() {
-  const q = el('repoSearch').value.trim().toLowerCase(); const ns = el('namespaceFilter').value;
-  const repos = state.repos.filter(r => (!q || r.toLowerCase().includes(q)) && (!ns || namespaceOf(r) === ns));
+  const q = el('repoSearch').value.trim().toLowerCase();
+  const repos = state.repos.filter(r => !q || r.toLowerCase().includes(q));
   repoList.innerHTML = ''; if (!repos.length) {
     const noPerm = state.user && !state.user.isAdmin && Array.isArray(state.permissions) && state.permissions.length === 0;
     repoList.innerHTML = `<div class="hint">${noPerm ? t('noPermission') : t('noImages')}</div>`;
@@ -91,12 +80,15 @@ async function selectRepo(repo) {
   await checkRepoProtection(repo);
 }
 function updateRepoActions() {
-  const ns = el('namespaceFilter').value || (state.selectedRepo ? namespaceOf(state.selectedRepo) : '');
+  // With the filter dropdown gone, the namespace comes from the selection (or
+  // the single delete button). createRepoBtn needs a writable namespace, so it
+  // is only enabled when a repo (hence its namespace) is selected.
+  const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : '';
   const selected = [...state.selectedRepos];
   const canAct = selected.length
     ? selected.some(canWriteRepo)
     : (state.selectedRepo ? canWriteRepo(state.selectedRepo) : true);
-  el('deleteSelectedReposBtn').disabled = !canAct;
+  el('deleteSelectedBtn').disabled = !canAct;
   el('createRepoBtn').disabled = !ns || ns === ROOT_NAMESPACE || !canWriteNamespace(ns);
   el('createNamespaceBtn').disabled = !isAdminUser();
   el('tagSettingsBtn').disabled = !state.selectedRepo || !canWriteRepo(state.selectedRepo);

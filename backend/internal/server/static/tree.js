@@ -88,8 +88,7 @@ function renderTree() {
   rebuildTreeData();
   const list = el('repoList');
   list.innerHTML = '';
-  const nsFilter = el('namespaceFilter').value;
-  const groups = treeState.groups.filter(g => !nsFilter || g.ns === nsFilter);
+  const groups = treeState.groups;
 
   if (!groups.length) {
     const noPerm = state.user && !state.user.isAdmin && Array.isArray(state.permissions) && state.permissions.length === 0;
@@ -181,7 +180,7 @@ function renderTree() {
             box.onchange = () => {
               box.checked ? state.selectedTags.add(tag) : state.selectedTags.delete(tag);
               row.classList.toggle('checked', box.checked);
-              updateTagBulkBar();
+              updateTagBulkBar(); updateRepoActions();
             };
           }));
       }
@@ -270,7 +269,6 @@ function initTree() {
   // its own handlers to the same inputs, so these are added as listeners
   // instead of overwriting .oninput.
   el('repoSearch').addEventListener('input', renderTreeView);
-  el('namespaceFilter').addEventListener('change', renderTreeView);
 }
 
 initTree();

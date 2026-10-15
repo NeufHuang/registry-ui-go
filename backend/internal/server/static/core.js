@@ -140,9 +140,8 @@ function applyI18n() {
   document.querySelectorAll('[data-i18n-placeholder]').forEach(n => n.placeholder = t(n.dataset.i18nPlaceholder));
   document.querySelectorAll('[data-i18n-title]').forEach(n => { n.title = t(n.dataset.i18nTitle); n.setAttribute('aria-label', t(n.dataset.i18nTitle)); });
   const langBtn = el('languageToggleBtn'); if (langBtn) langBtn.textContent = lang === 'en' ? '中' : 'EN';
-  const all = el('namespaceFilter')?.querySelector('option[value=""]');
-  if (all) all.textContent = t('allNamespaces');
-  // Re-render the namespace picker so the root entry picks up the new label.
+  // Re-render the tree so folder labels (e.g. the root namespace) pick up the
+  // new language. The old namespace picker no longer exists.
   if (typeof renderNamespaces === 'function') renderNamespaces();
   updateStatusDetail();
 }

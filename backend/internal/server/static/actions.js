@@ -87,7 +87,7 @@ async function deleteTags(tags, options={}) {
 // here as an explicit helper for callers that have already confirmed the
 // namespace scope.
 async function deleteNamespace(nsOverride) {
-  let ns = nsOverride || (state.selectedRepo ? namespaceOf(state.selectedRepo) : el('namespaceFilter').value);
+  let ns = nsOverride || (state.selectedRepo ? namespaceOf(state.selectedRepo) : '');
   // The picker stores the root namespace as the sentinel, but the API expects
   // the empty string the backend uses for it.
   if (ns === ROOT_NAMESPACE) ns = '';
