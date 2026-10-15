@@ -144,39 +144,60 @@ el('deleteSelectedBtn').onclick = async () => {
     state.selectedRepo = ''; state.tags = []; state.selectedTags.clear(); el('selectedRepo').textContent = t('selectImage'); updateRepoActions(); await loadRepos(true);
   }
 };
-el('createRepoBtn').onclick = async () => {
-  // The namespace filter is gone, so the namespace comes from the selected
-  // repository (createRepoBtn is only enabled when one is selected).
+// One "create" entry point replaces the former separate namespace / repo
+// buttons. "repo" is the default because creating a repository already
+// creates its namespace server-side (resolveRepo -> UpsertNamespace), so the
+// two-step flow was redundant. "namespace" stays available for admins, who are
+// the only users allowed to POST /api/namespaces and who may want to declare a
+// namespace before any repository exists in it.
+function openCreateDialog() {
   const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : '';
-  if (!ns || ns === ROOT_NAMESPACE) { toast(t('noRepoSelected'), true); return; }
-  if (!canWriteNamespace(ns)) { toast(t('noPermission'), true); return; }
-  const ok = await openFormDialog({
-    title: t('createRepo'),
-    message: ns + '/',
-    fields: [{key: 'name', label: 'namespace/repo', placeholder: ns + '/myapp', value: ns + '/'}],
+  const prefill = ns && ns !== ROOT_NAMESPACE ? ns + '/' : '';
+  return openFormDialog({
+    title: t('create'),
+    fields: [
+      {
+        type: 'radio',
+        key: 'kind',
+        label: t('createKind'),
+        options: [
+          {value: 'repo', label: t('createRepo')},
+          {value: 'namespace', label: t('createNamespace')},
+        ],
+        value: 'repo',
+      },
+      {key: 'name', label: t('createName'), placeholder: prefill ? prefill + 'myapp' : 'myteam/myapp', value: prefill, hint: t('createHint')},
+    ],
     submitLabel: t('save'),
     submit: async (v) => {
       const name = (v.name || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
-      if (!name || !name.includes('/')) return {ok: false, error: 'namespace/repo required'};
-      try { await api(`/api/repositories/${encodeRepo(name)}/init`, {method:'POST'}); toast(t('saveOK')); await loadRepos(true); return {ok: true}; }
+      if (!name) return {ok: false, error: t('createNameRequired')};
+      if (v.kind === 'namespace') {
+        if (name.includes('/')) return {ok: false, error: t('createNamespaceHint')};
+        if (!isAdminUser()) return {ok: false, error: t('noPermission')};
+        try { await api('/api/namespaces', {method: 'POST', body: JSON.stringify({name})}); toast(t('saveOK')); return {ok: true}; }
+        catch (e) { return {ok: false, error: e.message}; }
+      }
+      if (!name.includes('/')) return {ok: false, error: t('createRepoHint')};
+      const nsOfNew = namespaceOf(name);
+      if (nsOfNew === ROOT_NAMESPACE) return {ok: false, error: t('createRepoRootHint')};
+      if (!canWriteNamespace(nsOfNew)) return {ok: false, error: t('noPermission')};
+      try { await api(`/api/repositories/${encodeRepo(name)}/init`, {method: 'POST'}); toast(t('saveOK')); return {ok: true}; }
       catch (e) { return {ok: false, error: e.message}; }
     },
-  });
-  if (ok) await loadRepos(true);
-};
-el('createNamespaceBtn').onclick = async () => {
-  if (!isAdminUser()) { toast(t('noPermission'), true); return; }
-  const ok = await openFormDialog({
-    title: t('createNamespace'),
-    fields: [{key: 'name', label: t('createNamespace'), placeholder: 'myteam'}],
-    submitLabel: t('save'),
-    submit: async (v) => {
-      const name = (v.name || '').trim();
-      if (!name) return {ok: false, error: 'name required'};
-      try { await api('/api/namespaces', {method:'POST', body:JSON.stringify({name})}); toast(t('saveOK')); await loadRepos(true); return {ok: true}; }
-      catch (e) { return {ok: false, error: e.message}; }
-    },
-  });
+  }).then((ok) => { if (ok) loadRepos(true); return ok; });
+}
+
+el('createBtn').onclick = async () => {
+  // POST /api/namespaces is admin-only, and /init requires write access to the
+  // repository's namespace, so a non-admin with no writable namespace cannot
+  // use either branch. Block early rather than showing a form that always
+  // fails. Admins always may (namespace branch and any namespace's repo).
+  if (!isAdminUser()) {
+    const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : '';
+    if (!ns || ns === ROOT_NAMESPACE || !canWriteNamespace(ns)) { toast(t('noPermission'), true); return; }
+  }
+  await openCreateDialog();
 };
 // ⋮ dropdown toggles
 ['treeMoreBtn','manifestMoreBtn'].forEach(id => {

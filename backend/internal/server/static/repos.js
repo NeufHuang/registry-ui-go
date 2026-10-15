@@ -81,15 +81,17 @@ async function selectRepo(repo) {
 }
 function updateRepoActions() {
   // With the filter dropdown gone, the namespace comes from the selection (or
-  // the single delete button). createRepoBtn needs a writable namespace, so it
-  // is only enabled when a repo (hence its namespace) is selected.
+  // the single delete button). The create button opens a dialog that can create
+  // either a repository or (admin-only) a namespace, so it is enabled whenever
+  // the caller may do one of the two: any admin, or a user with write access to
+  // the selected repo's namespace.
   const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : '';
   const selected = [...state.selectedRepos];
   const canAct = selected.length
     ? selected.some(canWriteRepo)
     : (state.selectedRepo ? canWriteRepo(state.selectedRepo) : true);
+  const canCreate = isAdminUser() || (!!ns && ns !== ROOT_NAMESPACE && canWriteNamespace(ns));
   el('deleteSelectedBtn').disabled = !canAct;
-  el('createRepoBtn').disabled = !ns || ns === ROOT_NAMESPACE || !canWriteNamespace(ns);
-  el('createNamespaceBtn').disabled = !isAdminUser();
+  el('createBtn').disabled = !canCreate;
   el('tagSettingsBtn').disabled = !state.selectedRepo || !canWriteRepo(state.selectedRepo);
 }
