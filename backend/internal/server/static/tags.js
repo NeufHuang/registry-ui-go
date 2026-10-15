@@ -22,7 +22,10 @@ function renderTags() {
   renderFlatTags();
 }
 function renderFlatTags() {
-  const q = el('tagSearch').value.trim().toLowerCase(); const tags = state.tags.filter(tg => tg !== '_init' && (!q || tg.toLowerCase().includes(q)));
+  // The tree has one search box (#repoSearch); it is the flat-list fallback's
+  // only source too, since #tagSearch no longer exists.
+  const box = el('repoSearch');
+  const q = (box && box.value || '').trim().toLowerCase(); const tags = state.tags.filter(tg => tg !== '_init' && (!q || tg.toLowerCase().includes(q)));
   if (!tagList) return;
   tagList.innerHTML = ''; if (!tags.length) { tagList.innerHTML = `<div class="hint">${t('noTags')}</div>`; updateTagBulkBar(); return; }
   for (const tag of tags) {

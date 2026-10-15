@@ -48,13 +48,17 @@ function rebuildTreeData() {
     .sort((a, b) => a.ns.localeCompare(b.ns));
 }
 
-function repoMatchesQuery(repo) {
+// The tree has a single search box (#repoSearch) that matches repositories and
+// tags alike. A repo is kept when either its own name matches or one of its
+// (already loaded) tags matches, so searching "v1.2" reveals the tag rows.
+function repoMatchesQuery(repo, tags) {
   const q = (el('repoSearch').value || '').trim().toLowerCase();
   if (!q) return true;
-  return repo.toLowerCase().includes(q);
+  if (repo.toLowerCase().includes(q)) return true;
+  return (tags || []).some(tg => tg.toLowerCase().includes(q));
 }
 function tagMatchesQuery(tag) {
-  const q = (el('tagSearch').value || '').trim().toLowerCase();
+  const q = (el('repoSearch').value || '').trim().toLowerCase();
   if (!q) return true;
   return tag.toLowerCase().includes(q);
 }
@@ -96,7 +100,7 @@ function renderTree() {
 
   // While searching, every group and repo starts expanded so matches are not
   // hidden behind a collapsed folder.
-  const searching = !!(el('repoSearch').value || '').trim() || !!(el('tagSearch').value || '').trim();
+  const searching = !!(el('repoSearch').value || '').trim();
 
   for (const group of groups) {
     const ns = group.ns;
@@ -125,11 +129,11 @@ function renderTree() {
 
     const nsNode = list.lastChild;
     for (const repo of group.repos) {
-      // A repo search hides repos that do not match, so their tags are not
-      // rendered either.
-      if (!repoMatchesQuery(repo)) continue;
-      const isRepoFolded = !searching && treeState.folded.has(repo);
       const tags = treeState.loaded.get(repo) || [];
+      // A repo search hides repos that do not match (by name or by an already
+      // loaded tag), so their tags are not rendered either.
+      if (!repoMatchesQuery(repo, tags)) continue;
+      const isRepoFolded = !searching && treeState.folded.has(repo);
       const active = repo === state.selectedRepo;
       nsNode.appendChild(treeNode(1, `repo-row ${active ? 'selected' : ''}`, `
         <input type="checkbox" data-repo-check="${esc(repo)}" ${state.selectedRepos.has(repo) ? 'checked' : ''} aria-label="${esc(repo)}" />
@@ -150,7 +154,11 @@ function renderTree() {
 
       if (isRepoFolded) continue;
       const repoNode = nsNode.lastChild;
-      const visibleTags = tags.filter(tg => tg !== '_init' && tagMatchesQuery(tg));
+      // When the query matched the repository name itself, show every tag; when
+      // it matched a tag, show only the matching tags.
+      const q = (el('repoSearch').value || '').trim().toLowerCase();
+      const repoMatched = !!q && repo.toLowerCase().includes(q);
+      const visibleTags = tags.filter(tg => tg !== '_init' && (repoMatched || tagMatchesQuery(tg)));
       if (active && treeState.loading.has(repo)) {
         repoNode.appendChild(treeNode(2, 'tag-row', `<span class="tree-arrow empty"></span><span class="tree-label hint">${t('loading')}</span>`));
         continue;
@@ -262,7 +270,6 @@ function initTree() {
   // its own handlers to the same inputs, so these are added as listeners
   // instead of overwriting .oninput.
   el('repoSearch').addEventListener('input', renderTreeView);
-  el('tagSearch').addEventListener('input', renderTreeView);
   el('namespaceFilter').addEventListener('change', renderTreeView);
 }
 

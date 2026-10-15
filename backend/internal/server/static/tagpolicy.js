@@ -76,7 +76,14 @@ el('retentionPreviewBtn').onclick = async () => {
     await loadRepos(true);
   } catch(e) { toast(e.message, true); }
 };
-el('refreshReposBtn').onclick = async () => { try { await loadRepos(true); } catch(e) { toast(e.message, true); } };
+// The single refresh button reloads the repository list and, when a repo is
+// selected, re-fetches its tags so the tree shows freshly pushed images.
+el('refreshReposBtn').onclick = async () => {
+  try {
+    await loadRepos(true);
+    if (state.selectedRepo && typeof refreshTreeTags === 'function') await refreshTreeTags();
+  } catch(e) { toast(e.message, true); }
+};
 el('deleteSelectedReposBtn').onclick = async () => {
   const all = [...state.selectedRepos];
   // Skip repos the user cannot write to instead of aborting the whole batch.
@@ -168,8 +175,7 @@ el('createNamespaceBtn').onclick = async () => {
 });
 document.addEventListener('click', () => { document.querySelectorAll('[id$=Dropdown]').forEach(d => d.classList.add('hidden-ui')); });
 [].forEach.call(document.querySelectorAll('[id$=Dropdown]'), d => { d.addEventListener('click', e => e.stopPropagation()); });
-el('refreshTagsBtn').onclick = async () => { if (state.selectedRepo) try { await refreshTreeTags(); } catch(e) { toast(e.message, true); } };
-el('repoSearch').oninput = renderTreeView; el('namespaceFilter').onchange = () => { const ns = el('namespaceFilter').value; if (state.selectedRepo && ns && namespaceOf(state.selectedRepo) !== ns) { state.selectedRepo = ''; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = []; el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderTree(); const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); } renderTree(); updateRepoActions(); }; el('tagSearch').oninput = renderTreeView;
+el('repoSearch').oninput = renderTreeView; el('namespaceFilter').onchange = () => { const ns = el('namespaceFilter').value; if (state.selectedRepo && ns && namespaceOf(state.selectedRepo) !== ns) { state.selectedRepo = ''; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = []; el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderTree(); const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); } renderTree(); updateRepoActions(); };
 el('deleteSelectedTagsBtn').onclick = async () => { try { await deleteTags([...state.selectedTags]); } catch(e) { toast(e.message, true); } };
 el('favoriteBtn').onclick = async () => { try { await favoriteCurrent(); } catch(e) { toast(e.message, true); } };
 el('recentRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecent(); }; el('favoritesRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadFavorites(); }; el('auditRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadAudit(); }; el('recycleRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecycle(); };
