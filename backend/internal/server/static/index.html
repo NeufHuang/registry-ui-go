@@ -49,16 +49,10 @@
       </section>
 
       <section class="panel details">
-        <div class="panel-head"><h2>Manifest</h2><div class="panel-tools"><button id="favoriteBtn" class="icon-btn" disabled data-i18n-title="favoriteNote" aria-label="收藏/备注">☆</button><div style="position:relative"><button id="manifestMoreBtn" class="icon-btn" type="button">⋯</button><div id="manifestMoreDropdown" class="user-dropdown hidden-ui" style="right:0;left:auto;padding:8px;min-width:160px"><label class="mf-item"><input type="checkbox" id="mfArtifactType" checked /> artifactType</label><label class="mf-item"><input type="checkbox" id="mfContentType" checked /> contentType</label><label class="mf-item"><input type="checkbox" id="mfMediaType" checked /> mediaType</label><label class="mf-item"><input type="checkbox" id="mfSchema" checked /> schema</label><label class="mf-item"><input type="checkbox" id="mfLayers" checked /> layers</label><label class="mf-item"><input type="checkbox" id="mfPlatforms" checked /> platforms</label></div></div></div></div>
+        <div class="panel-head"><h2>Manifest</h2><div class="panel-tools"><button id="favoriteBtn" class="icon-btn" disabled data-i18n-title="favoriteNote" aria-label="收藏/备注">☆</button><div style="position:relative"><button id="manifestMoreBtn" class="icon-btn" type="button">⋯</button><div id="manifestMoreDropdown" class="user-dropdown hidden-ui" style="right:0;left:auto;padding:8px;min-width:160px"><button id="editRepoDescBtn" type="button" data-i18n="repoDescription">仓库描述</button><div class="dd-sep"></div><label class="mf-item"><input type="checkbox" id="mfArtifactType" checked /> artifactType</label><label class="mf-item"><input type="checkbox" id="mfContentType" checked /> contentType</label><label class="mf-item"><input type="checkbox" id="mfMediaType" checked /> mediaType</label><label class="mf-item"><input type="checkbox" id="mfSchema" checked /> schema</label><label class="mf-item"><input type="checkbox" id="mfLayers" checked /> layers</label><label class="mf-item"><input type="checkbox" id="mfPlatforms" checked /> platforms</label></div></div></div></div>
         <div id="selectedRef" class="hint hidden-ui" data-i18n="selectTag">请选择 tag</div>
         <div id="repoDescription" class="repo-desc hidden-ui;">
           <div id="repoDescText" class="desc-content"></div>
-          <button id="editRepoDescBtn" class="icon-btn ghost" type="button" title="Edit description">✏</button>
-        </div>
-        <div id="repoDescriptionEdit" class="repo-desc-edit hidden-ui;">
-          <textarea id="repoDescInput" rows="3" class="desc-input"></textarea>
-          <button id="saveRepoDescBtn" type="button" class="ghost" data-i18n="save">保存</button>
-          <button id="cancelRepoDescBtn" type="button" class="ghost" data-i18n="cancel">取消</button>
         </div>
         <div id="summary" class="summary"></div>
         <div id="configDetails" class="config-details hidden-ui" style="margin-top:12px;"></div>
@@ -253,6 +247,17 @@
           <button type="button" id="formDialogCancelBtn" data-i18n="cancel">取消</button>
           <button type="button" id="formDialogOkBtn">确定</button>
         </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay hidden-ui" id="repoDescModal">
+      <div class="modal-panel" style="width:min(520px,calc(100vw-36px))">
+        <div class="modal-title"><h3 id="repoDescModalName">-</h3><button class="modal-close" onclick="closeModal('repoDescModal')" aria-label="关闭">×</button></div>
+        <div class="modal-body">
+          <p class="hint" data-i18n="repoDescriptionHint" style="margin:0 0 8px">支持 Markdown：**粗体**、*斜体*、`代码`、空行分段。</p>
+          <textarea id="repoDescModalInput" rows="8" class="desc-input" data-i18n-placeholder="repoDescriptionPlaceholder" placeholder="这个仓库的用途、维护者、拉取方式..."></textarea>
+        </div>
+        <div class="modal-foot"><button type="button" id="repoDescModalCancelBtn" data-i18n="cancel">取消</button><button id="repoDescModalSaveBtn" data-i18n="save">保存</button></div>
       </div>
     </div>
 

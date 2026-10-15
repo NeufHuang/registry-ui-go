@@ -484,13 +484,13 @@ async function loadRepoDescription(repo) {
   } catch (e) { console.warn('loadRepoDescription: failed', e); el('repoDescription').classList.add('hidden-ui'); }
 }
 
-// The edit affordance is only offered to users who can actually write the
-// repository: the server answers 403 for everyone else, and offering a
-// save button that is guaranteed to fail is worse than not offering it.
+// The description is edited in its own modal (repoDescModal), reachable from the
+// Manifest panel's ⋮ menu. Only offer it to users who can actually write the
+// repository: the server answers 403 for everyone else, and offering a dialog
+// that is guaranteed to fail is worse than not offering it.
 function applyRepoDescriptionPermissions() {
   const btn = el('editRepoDescBtn');
   if (btn) btn.classList.toggle('hidden-ui', !canWriteRepo(state.selectedRepo));
-  if (!canWriteRepo(state.selectedRepo)) el('repoDescriptionEdit').classList.add('hidden-ui');
 }
 
 function simpleMarkdown(text) {
@@ -513,22 +513,26 @@ function simpleMarkdown(text) {
 
 async function saveRepoDescription() {
   if (!state.selectedRepo) return;
-  const desc = el('repoDescInput').value;
+  if (!canWriteRepo(state.selectedRepo)) { toast(t('noPermission'), true); return; }
+  const desc = el('repoDescModalInput').value;
   await api(`/api/repo-description/${encodeRepo(state.selectedRepo)}/description`, {method:'PUT', body:JSON.stringify({description: desc})});
   toast(t('descriptionSaved'));
-  el('repoDescriptionEdit').classList.add('hidden-ui');
-  if (desc) el('repoDescText').innerHTML = simpleMarkdown(desc);
-  loadRepoDescription(state.selectedRepo);
+  closeModal('repoDescModal');
+  await loadRepoDescription(state.selectedRepo);
 }
 
 async function showRepoDescriptionEdit() {
-  if (!state.selectedRepo) return;
+  if (!state.selectedRepo) { toast(t('noRepoSelected'), true); return; }
+  if (!canWriteRepo(state.selectedRepo)) { toast(t('noPermission'), true); return; }
+  el('repoDescModalName').textContent = state.selectedRepo;
+  // Pre-fill from the rendered description when the cached value is not handy;
+  // the GET is the authoritative source and also covers the first edit of a
+  // repo whose description is currently empty (nothing rendered to reuse).
   try {
     const {data} = await api(`/api/repo-description/${encodeRepo(state.selectedRepo)}/description`);
-    el('repoDescInput').value = data?.description || '';
-  } catch (e) { console.warn('showRepoDescriptionEdit: failed to load description', e); el('repoDescInput').value = ''; }
-  el('repoDescription').classList.add('hidden-ui');
-  el('repoDescriptionEdit').classList.remove('hidden-ui');
+    el('repoDescModalInput').value = data?.description || '';
+  } catch (e) { console.warn('showRepoDescriptionEdit: failed to load description', e); el('repoDescModalInput').value = ''; }
+  showModal('repoDescModal');
 }
 
 // ---- Event Bindings ----
@@ -538,11 +542,10 @@ el('addTokenBtn').onclick = () => showCreateTokenDialog();
 el('addWebhookBtn').onclick = () => showAddWebhookDialog();
 el('repoStatsDetails')?.addEventListener('toggle', (e) => { if (e.target.open) loadStats(); });
 const _edb = el('editRepoDescBtn'); if (_edb) _edb.onclick = () => showRepoDescriptionEdit();
-const _sdb = el('saveRepoDescBtn'); if (_sdb) _sdb.onclick = async () => {
-  if (!canWriteRepo(state.selectedRepo)) { toast(t('noPermission'), true); return; }
+const _sdb = el('repoDescModalSaveBtn'); if (_sdb) _sdb.onclick = async () => {
   try { await saveRepoDescription(); } catch(e) { toast(e.message, true); }
 };
-const _cdb = el('cancelRepoDescBtn'); if (_cdb) _cdb.onclick = () => { el('repoDescriptionEdit').classList.add('hidden-ui'); loadRepoDescription(state.selectedRepo); };
+const _cdb = el('repoDescModalCancelBtn'); if (_cdb) _cdb.onclick = () => closeModal('repoDescModal');
 
 // Expose to global scope for inline onclick handlers in HTML
 window.closeModal = closeModal;
