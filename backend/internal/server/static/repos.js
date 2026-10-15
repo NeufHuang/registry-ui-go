@@ -90,8 +90,12 @@ function updateRepoActions() {
   const canAct = selected.length
     ? selected.some(canWriteRepo)
     : (state.selectedRepo ? canWriteRepo(state.selectedRepo) : true);
+  // The tag-policy dialog works on any checkbox selection (a namespace row
+  // selects every repo of that namespace) and otherwise on the selected repo,
+  // so it is enabled whenever there is something to configure.
+  const canPolicy = selected.length > 0 || !!state.selectedRepo;
   const canCreate = isAdminUser() || (!!ns && ns !== ROOT_NAMESPACE && canWriteNamespace(ns));
   el('deleteSelectedBtn').disabled = !canAct;
   el('createBtn').disabled = !canCreate;
-  el('tagSettingsBtn').disabled = !state.selectedRepo || !canWriteRepo(state.selectedRepo);
+  el('tagSettingsBtn').disabled = !canPolicy;
 }

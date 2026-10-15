@@ -1,7 +1,13 @@
 async function deleteTags(tags, options={}) {
   tags = [...new Set(tags)].filter(Boolean);
-  if (!state.selectedRepo || !tags.length) return false;
-  const repo = state.selectedRepo;
+  if (!tags.length) return false;
+  // The repository owning these tags. It is normally state.selectedRepo, but a
+  // tag can also be selected by its checkbox in a repo whose row was never
+  // clicked; tree.js now points state.selectedRepo at that repo, so accept it
+  // explicitly as a fallback.
+  const repo = state.selectedRepo || options.repo;
+  if (!repo) { toast(t('noRepoSelected'), true); return false; }
+  if (!canWriteRepo(repo)) { toast(t('noPermission'), true); return false; }
   // Resolve digests for the selected tags and, so we can tell whether a tag
   // is the last one for its digest, for every other tag in the repo too.
   // NOTE: The digest cache is only valid for the duration of this single
@@ -13,7 +19,9 @@ async function deleteTags(tags, options={}) {
   const digestCache = {};
   const digestFor = async (tag) => {
     if (digestCache[tag] !== undefined) return digestCache[tag];
-    const d = await manifestDigestForTag(tag);
+    // manifestDigestForTag() reads state.selectedRepo; use the explicit variant
+    // so a checkbox-only selection resolves digests from the right repository.
+    const d = await manifestDigestForTagRef(repo, tag);
     digestCache[tag] = d || '';
     return digestCache[tag];
   };
@@ -25,8 +33,13 @@ async function deleteTags(tags, options={}) {
   }
   // digest -> all repo tags pointing at it
   const allByDigest = {};
-  const repoTags = (state.tags || []).filter(tg => tg !== '_init');
+  // The sibling-tag list must belong to the repo being deleted from. When the
+  // selection came from a checkbox in a repo other than state.selectedRepo's,
+  // state.tags holds the wrong repo's tags; the tree cache is authoritative.
+  const repoTags = (typeof treeState !== 'undefined' && treeState.loaded.get(repo))
+    || state.tags || [];
   for (const tg of repoTags) {
+    if (tg === '_init') continue;
     const d = await digestFor(tg);
     if (!d) continue;
     (allByDigest[d] = allByDigest[d] || []).push(tg);
@@ -74,11 +87,16 @@ async function deleteTags(tags, options={}) {
   if (warnings.length) toast(`${summary} — ${warnings.join('; ')}`, true, true);
   else toast(summary);
   state.selectedTags.clear(); clearDetails();
-  if (typeof refreshTreeTags === 'function') { treeState.loaded.delete(repo); await refreshTreeTags(); }
-  else await loadTags();
+  // Refresh the tag list of the repo we actually deleted from, not of
+  // state.selectedRepo (which a checkbox-only selection never set).
+  if (typeof refreshTreeTags === 'function' && state.selectedRepo) { treeState.loaded.delete(state.selectedRepo); await refreshTreeTags(); }
+  if (typeof treeState !== 'undefined') treeState.loaded.delete(repo);
+  if (state.selectedRepo !== repo && typeof renderTreeView === 'function') renderTreeView();
+  else if (typeof refreshTreeTags !== 'function') await loadTags();
   await refreshSidebars();
   return true;
-}async function deleteCurrent() {
+}
+async function deleteCurrent() {
   if (!state.selectedRepo || !state.selectedTag) return;
   await deleteTags([state.selectedTag]);
 }

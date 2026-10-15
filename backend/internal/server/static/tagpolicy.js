@@ -1,8 +1,21 @@
-el('tagSettingsBtn').onclick = async () => {
-  if (!state.selectedRepo) { toast(t('noRepoSelected'), true); return; }
-  el('tagSettingsRepoName').textContent = state.selectedRepo;
+// The tag-policy dialog works on a single repository or on a batch of them —
+// checking a namespace row in the tree selects every repo of that namespace, so
+// the dialog applies one policy to all of them. The backend only exposes
+// per-repository policy (there is no namespace-scoped endpoint), so a batch is
+// a client-side loop of PUTs — the same pattern the batch delete already uses.
+const tagPolicyScope = {repos: [], label: ''};
+
+// Open the dialog for the given repositories. A single repo keeps the original
+// behaviour (its own stats shown, one PUT). Multiple repos show the first
+// repo's stats as a starting point and PUT the same values to each.
+async function openTagPolicyDialog(repos) {
+  if (!repos.length) { toast(t('noRepoSelected'), true); return; }
+  tagPolicyScope.repos = repos;
+  const ns = namespaceOf(repos[0]);
+  tagPolicyScope.label = repos.length === 1 ? repos[0] : `${namespaceLabel(ns)} (${repos.length} 个仓库)`;
+  el('tagSettingsRepoName').textContent = tagPolicyScope.label;
   try {
-    const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/stats`);
+    const {data} = await api(`/api/repositories/${encodeRepo(repos[0])}/stats`);
     el('tagStatsTagCount').textContent = data.tagCount ?? '-';
     el('tagStatsSize').textContent = data.totalSize ? fmtBytes(data.totalSize) : '-';
     el('tagStatsPendingGC').textContent = (data.pendingGCCount || 0) + ' · ' + fmtBytes(data.pendingGCSize || 0);
@@ -17,6 +30,16 @@ el('tagSettingsBtn').onclick = async () => {
     el('tagSettingPushCreateRepo').checked = data.pushCreateRepo !== false;
   } catch(e) { toast(e.message, true); return; }
   showModal('tagSettingsModal');
+}
+
+el('tagSettingsBtn').onclick = async () => {
+  // Prefer the checkbox selection (a namespace row checks every repo of that
+  // namespace, a repo row checks just itself), then the repo whose row is
+  // selected. Sorting keeps a namespace batch deterministic.
+  const checked = [...state.selectedRepos].sort();
+  if (checked.length > 0) { await openTagPolicyDialog(checked); return; }
+  if (state.selectedRepo) { await openTagPolicyDialog([state.selectedRepo]); return; }
+  toast(t('noRepoSelected'), true);
 };
 document.querySelectorAll('input[name="protectionMode"]').forEach(r => {
   r.addEventListener('change', function() {
@@ -37,15 +60,26 @@ document.querySelectorAll('input[name="globalProtectionMode"]').forEach(r => {
 el('tagSettingsCancelBtn').onclick = () => closeModal('tagSettingsModal');
 el('tagSettingsSaveBtn').onclick = async (e) => {
   e.preventDefault();
+  const body = JSON.stringify({
+    protectionMode: document.querySelector('input[name="protectionMode"]:checked')?.value || 'rules',
+    overwriteAction: document.querySelector('input[name="overwriteAction"]:checked')?.value || 'recycle',
+    keepCount: parseInt(el('tagSettingKeepCount').value) || 0,
+    anonymousPull: el('tagSettingAnonymousPull').checked,
+    pushCreateRepo: el('tagSettingPushCreateRepo').checked,
+  });
+  // Skip repos the user cannot write to instead of aborting the whole batch;
+  // the server would 403 them anyway and the toast below reports the real
+  // outcome.
+  const writable = tagPolicyScope.repos.filter(canWriteRepo);
   try {
-    await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/tag-policy`, {method:'PUT', body:JSON.stringify({
-      protectionMode: document.querySelector('input[name="protectionMode"]:checked')?.value || 'rules',
-      overwriteAction: document.querySelector('input[name="overwriteAction"]:checked')?.value || 'recycle',
-      keepCount: parseInt(el('tagSettingKeepCount').value) || 0,
-      anonymousPull: el('tagSettingAnonymousPull').checked,
-      pushCreateRepo: el('tagSettingPushCreateRepo').checked,
-    })});
-    toast(t('saveOK'));
+    for (const repo of writable) {
+      await api(`/api/repositories/${encodeRepo(repo)}/tag-policy`, {method:'PUT', body});
+    }
+    if (writable.length < tagPolicyScope.repos.length) {
+      toast(`${t('saveOK')} (${writable.length}/${tagPolicyScope.repos.length})`, true);
+    } else {
+      toast(t('saveOK'));
+    }
     closeModal('tagSettingsModal');
     if (state.selectedRepo) await checkRepoProtection(state.selectedRepo);
   } catch(e) { toast(e.message, true); }
@@ -145,54 +179,45 @@ el('deleteSelectedBtn').onclick = async () => {
   }
 };
 // One "create" entry point replaces the former separate namespace / repo
-// buttons. "repo" is the default because creating a repository already
-// creates its namespace server-side (resolveRepo -> UpsertNamespace), so the
-// two-step flow was redundant. "namespace" stays available for admins, who are
-// the only users allowed to POST /api/namespaces and who may want to declare a
-// namespace before any repository exists in it.
+// buttons. The kind is inferred from what the user types: "namespace/repo"
+// creates the repository (and its namespace, since the server's resolveRepo ->
+// UpsertNamespace does that automatically), a bare name creates an empty
+// namespace. That removes the radio the user asked to drop, and keeps the
+// common case one keystroke shorter.
 function openCreateDialog() {
   const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : '';
   const prefill = ns && ns !== ROOT_NAMESPACE ? ns + '/' : '';
   return openFormDialog({
     title: t('create'),
     fields: [
-      {
-        type: 'radio',
-        key: 'kind',
-        label: t('createKind'),
-        options: [
-          {value: 'repo', label: t('createRepo')},
-          {value: 'namespace', label: t('createNamespace')},
-        ],
-        value: 'repo',
-      },
       {key: 'name', label: t('createName'), placeholder: prefill ? prefill + 'myapp' : 'myteam/myapp', value: prefill, hint: t('createHint')},
     ],
     submitLabel: t('save'),
     submit: async (v) => {
       const name = (v.name || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
       if (!name) return {ok: false, error: t('createNameRequired')};
-      if (v.kind === 'namespace') {
-        if (name.includes('/')) return {ok: false, error: t('createNamespaceHint')};
-        if (!isAdminUser()) return {ok: false, error: t('noPermission')};
-        try { await api('/api/namespaces', {method: 'POST', body: JSON.stringify({name})}); toast(t('saveOK')); return {ok: true}; }
+      // A name with a "/" is a repository reference; without one it declares a
+      // namespace. The server accepts both shapes, so the split is purely a
+      // client-side routing decision.
+      if (name.includes('/')) {
+        const nsOfNew = namespaceOf(name);
+        if (nsOfNew === ROOT_NAMESPACE) return {ok: false, error: t('createRepoRootHint')};
+        if (!canWriteNamespace(nsOfNew)) return {ok: false, error: t('noPermission')};
+        try { await api(`/api/repositories/${encodeRepo(name)}/init`, {method: 'POST'}); toast(t('saveOK')); return {ok: true}; }
         catch (e) { return {ok: false, error: e.message}; }
       }
-      if (!name.includes('/')) return {ok: false, error: t('createRepoHint')};
-      const nsOfNew = namespaceOf(name);
-      if (nsOfNew === ROOT_NAMESPACE) return {ok: false, error: t('createRepoRootHint')};
-      if (!canWriteNamespace(nsOfNew)) return {ok: false, error: t('noPermission')};
-      try { await api(`/api/repositories/${encodeRepo(name)}/init`, {method: 'POST'}); toast(t('saveOK')); return {ok: true}; }
+      // POST /api/namespaces is admin-only.
+      if (!isAdminUser()) return {ok: false, error: t('createNamespaceAdminOnly')};
+      try { await api('/api/namespaces', {method: 'POST', body: JSON.stringify({name})}); toast(t('saveOK')); return {ok: true}; }
       catch (e) { return {ok: false, error: e.message}; }
     },
   }).then((ok) => { if (ok) loadRepos(true); return ok; });
 }
 
 el('createBtn').onclick = async () => {
-  // POST /api/namespaces is admin-only, and /init requires write access to the
-  // repository's namespace, so a non-admin with no writable namespace cannot
-  // use either branch. Block early rather than showing a form that always
-  // fails. Admins always may (namespace branch and any namespace's repo).
+  // Both branches need write access somewhere: the repository branch needs it
+  // on the target namespace, the namespace branch is admin-only. Block a user
+  // who can do neither instead of showing a form that always fails.
   if (!isAdminUser()) {
     const ns = state.selectedRepo ? namespaceOf(state.selectedRepo) : '';
     if (!ns || ns === ROOT_NAMESPACE || !canWriteNamespace(ns)) { toast(t('noPermission'), true); return; }

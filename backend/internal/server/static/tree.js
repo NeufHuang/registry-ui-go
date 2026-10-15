@@ -180,6 +180,13 @@ function renderTree() {
             box.onchange = () => {
               box.checked ? state.selectedTags.add(tag) : state.selectedTags.delete(tag);
               row.classList.toggle('checked', box.checked);
+              // deleteTags() keys off state.selectedRepo, and checking a tag
+              // does not select its repo row (the row click does that). Point
+              // the state at the repo owning this tag so a checkbox-only
+              // selection can be deleted; the tags themselves are the
+              // authoritative selection, so this does not change what the
+              // delete button acts on.
+              if (box.checked && !state.selectedRepo) state.selectedRepo = repo;
               updateTagBulkBar(); updateRepoActions();
             };
           }));
