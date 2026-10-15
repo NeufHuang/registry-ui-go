@@ -484,10 +484,11 @@ async function loadRepoDescription(repo) {
   } catch (e) { console.warn('loadRepoDescription: failed', e); el('repoDescription').classList.add('hidden-ui'); }
 }
 
-// The description is edited in its own modal (repoDescModal), reachable from the
-// Manifest panel's ⋮ menu. Only offer it to users who can actually write the
-// repository: the server answers 403 for everyone else, and offering a dialog
-// that is guaranteed to fail is worse than not offering it.
+// The description is edited in its own modal (repoDescModal), opened from the
+// ✏ button next to the favorite star in the Manifest panel's header. Only offer
+// it to users who can actually write the repository: the server answers 403 for
+// everyone else, and offering a dialog that is guaranteed to fail is worse than
+// not offering it.
 function applyRepoDescriptionPermissions() {
   const btn = el('editRepoDescBtn');
   if (btn) btn.classList.toggle('hidden-ui', !canWriteRepo(state.selectedRepo));

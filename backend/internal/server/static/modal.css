@@ -39,10 +39,6 @@ dialog { display: none }
 .tab-content .section-title:first-child{margin-top:0}
 .mf-item{display:flex;flex-direction:row;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;font-size:13px}
 .mf-item input{width:auto}
-/* menu items sitting above the manifest-field checkboxes in the ⋮ menu */
-.user-dropdown .dd-item{padding:6px 10px;font-size:13px;text-align:left;border:0;background:none;color:inherit;cursor:pointer;border-radius:8px;width:100%}
-.user-dropdown .dd-item:hover{background:var(--panel2)}
-.dd-sep{height:1px;background:var(--border);margin:4px 6px}
 
 /* User management styles */
 .user-card {
