@@ -80,8 +80,11 @@ function treeNode(indent, cls, html, handlers) {
 }
 
 function arrowHtml(folded, isEmpty) {
-  if (isEmpty) return `<span class="tree-arrow empty" aria-hidden="true">▸</span>`;
-  return `<span class="tree-arrow" role="button" tabindex="0" aria-expanded="${!folded}">${folded ? '▸' : '▾'}</span>`;
+  if (isEmpty) return `<span class="tree-arrow empty" aria-hidden="true"></span>`;
+  // The triangle is drawn by CSS (.tree-arrow::before); the expanded class
+  // rotates it to point down. Keeping the text content out avoids the
+  // font-dependent ▸/▾ glyphs.
+  return `<span class="tree-arrow${folded ? '' : ' expanded'}" role="button" tabindex="0" aria-expanded="${!folded}"></span>`;
 }
 
 function renderTree() {
