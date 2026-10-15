@@ -1,6 +1,29 @@
-async function loadTags() { tagList.innerHTML = `<div class="hint">${t('loading')}</div>`; const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/tags`); state.tags = (data.tags || []).sort(); renderTags(); }
+async function loadTags() {
+  if (typeof renderTreeView === 'function') {
+    // Directory-tree mode: the selected repo's tags are usually already cached
+    // by expandRepo(), so only fetch when they are missing.
+    if (!treeState.loaded.has(state.selectedRepo)) {
+      const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/tags`);
+      state.tags = (data.tags || []).sort();
+      treeState.loaded.set(state.selectedRepo, state.tags);
+    } else {
+      state.tags = treeState.loaded.get(state.selectedRepo);
+    }
+    renderTreeView();
+    return;
+  }
+  if (tagList) tagList.innerHTML = `<div class="hint">${t('loading')}</div>`;
+  const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/tags`);
+  state.tags = (data.tags || []).sort(); renderTags();
+}
+// In tree mode the tree owns the row rendering; this is the flat-list path.
 function renderTags() {
+  if (typeof renderTreeView === 'function') { renderTreeView(); return; }
+  renderFlatTags();
+}
+function renderFlatTags() {
   const q = el('tagSearch').value.trim().toLowerCase(); const tags = state.tags.filter(tg => tg !== '_init' && (!q || tg.toLowerCase().includes(q)));
+  if (!tagList) return;
   tagList.innerHTML = ''; if (!tags.length) { tagList.innerHTML = `<div class="hint">${t('noTags')}</div>`; updateTagBulkBar(); return; }
   for (const tag of tags) {
     const checked = state.selectedTags.has(tag);
@@ -19,6 +42,8 @@ function updateTagBulkBar() {
   const count = state.selectedTags.size;
   el('selectedTagCount').textContent = t('selectedCount', {count});
   el('selectedTagCount').classList.toggle('hidden-ui', count === 0);
+  // Tags are cached per repo (treeState.loaded), so the selected tags belong to
+  // the currently selected repo. Gate the bulk-delete button on it.
   el('deleteSelectedTagsBtn').disabled = count === 0 || !canWriteRepo(state.selectedRepo);
 }
 async function selectTag(tag) {

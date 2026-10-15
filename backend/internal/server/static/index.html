@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/layout.css" />
     <link rel="stylesheet" href="/components.css" />
     <link rel="stylesheet" href="/modal.css" />
+    <link rel="stylesheet" href="/tree.css" />
   </head>
   <body>
     <header class="topbar">
@@ -34,20 +35,19 @@
     </header>
 
     <main class="layout">
-      <section class="panel repos">
-        <div class="panel-head"><h2 data-i18n="repositories">仓库</h2><div class="panel-tools"><button id="refreshReposBtn" class="icon-btn" type="button" data-i18n-title="refresh" aria-label="刷新仓库">⟳</button><div style="position:relative"><button id="repoMoreBtn" class="icon-btn" type="button">⋯</button><div id="repoMoreDropdown" class="user-dropdown hidden-ui"><button id="createNamespaceBtn" type="button">➕ <span data-i18n="createNamespace">创建命名空间</span></button><button id="createRepoBtn" type="button">➕ <span data-i18n="createRepo">创建仓库</span></button><button id="deleteSelectedReposBtn" type="button" style="color:var(--danger)">✕ <span data-i18n="delete">删除</span></button></div></div></div></div>
-        <span id="selectedRepoCount" class="selection-count hidden-ui">已选 0 个</span>
+      <section class="panel tree-panel">
+        <div class="panel-head"><h2 data-i18n="repositories">仓库</h2><div class="panel-tools"><button id="refreshReposBtn" class="icon-btn" type="button" data-i18n-title="refresh" aria-label="刷新仓库">⟳</button><button id="refreshTagsBtn" class="icon-btn" type="button" data-i18n-title="refresh" aria-label="刷新 Tag">⟳</button><span id="tagImmutableIcon" class="immutable-icon hidden-ui" data-i18n-title="repoImmutable" title="不可变仓库">🔒</span><div style="position:relative"><button id="treeMoreBtn" class="icon-btn" type="button">⋯</button><div id="treeMoreDropdown" class="user-dropdown hidden-ui"><button id="createNamespaceBtn" type="button">➕ <span data-i18n="createNamespace">创建命名空间</span></button><button id="createRepoBtn" type="button">➕ <span data-i18n="createRepo">创建仓库</span></button><button id="tagSettingsBtn" type="button">⚙ <span data-i18n="tagSettings">Tag 策略</span></button><button id="deleteSelectedReposBtn" type="button" style="color:var(--danger)">✕ <span data-i18n="delete">删除仓库</span></button><button id="deleteSelectedTagsBtn" type="button" style="color:var(--danger)">✕ <span data-i18n="delete">删除 Tag</span></button></div></div></div></div>
         <select id="namespaceFilter" title="按命名空间分组过滤"><option value="" data-i18n="allNamespaces">全部命名空间</option></select>
-        <input id="repoSearch" type="search" name="search" data-i18n-placeholder="searchDirectories" placeholder="搜索仓库..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" />
-        <div id="repoList" class="list"></div>
-      </section>
-
-      <section class="panel tags">
-        <div class="panel-head"><h2><span data-i18n="imageTags">镜像 Tag</span> <span class="help-dot" tabindex="0" data-i18n-title="latestPolicy">?</span> <span id="tagImmutableIcon" class="immutable-icon hidden-ui" data-i18n-title="repoImmutable" title="不可变仓库">🔒</span></h2><div class="panel-tools"><button id="refreshTagsBtn" class="icon-btn" type="button" data-i18n-title="refresh" aria-label="刷新 Tag">⟳</button><div style="position:relative"><button id="tagMoreBtn" class="icon-btn" type="button">⋯</button><div id="tagMoreDropdown" class="user-dropdown hidden-ui"><button id="tagSettingsBtn" type="button">⚙ <span data-i18n="tagSettings">Tag 策略</span></button><button id="deleteSelectedTagsBtn" type="button" style="color:var(--danger)">✕ <span data-i18n="delete">删除</span></button></div></div></div></div>
-        <span id="selectedTagCount" class="selection-count hidden-ui">已选 0 个</span>
-        <div id="selectedRepo" class="hint" data-i18n="selectImage">请选择镜像</div>
-        <input id="tagSearch" type="search" name="search" data-i18n-placeholder="searchTags" placeholder="搜索 tag..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" />
-        <div id="tagList" class="list"></div>
+        <div class="tree-search-row">
+          <input id="repoSearch" type="search" name="search" data-i18n-placeholder="searchDirectories" placeholder="搜索仓库..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" />
+          <input id="tagSearch" type="search" name="search" data-i18n-placeholder="searchTags" placeholder="搜索 tag..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" />
+        </div>
+        <div class="tree-selection">
+          <span id="selectedRepoCount" class="selection-count hidden-ui">已选 0 个</span>
+          <span id="selectedTagCount" class="selection-count hidden-ui" style="margin-left:8px">已选 0 个</span>
+          <span id="selectedRepo" class="hint" data-i18n="selectImage">请选择镜像</span>
+        </div>
+        <div id="repoList" class="list tree"></div>
       </section>
 
       <section class="panel details">
@@ -333,6 +333,7 @@
     <script src="/settings.js"></script>
     <script src="/repos.js"></script>
     <script src="/tags.js"></script>
+    <script src="/tree.js"></script>
     <script src="/dialogs.js"></script>
     <script src="/actions.js"></script>
     <script src="/sidebars.js"></script>

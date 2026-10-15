@@ -73,10 +73,12 @@ async function deleteTags(tags, options={}) {
   // must be surfaced instead of hiding behind the success toast.
   if (warnings.length) toast(`${summary} — ${warnings.join('; ')}`, true, true);
   else toast(summary);
-  state.selectedTags.clear(); clearDetails(); await loadTags(); await refreshSidebars();
+  state.selectedTags.clear(); clearDetails();
+  if (typeof refreshTreeTags === 'function') { treeState.loaded.delete(repo); await refreshTreeTags(); }
+  else await loadTags();
+  await refreshSidebars();
   return true;
-}
-async function deleteCurrent() {
+}async function deleteCurrent() {
   if (!state.selectedRepo || !state.selectedTag) return;
   await deleteTags([state.selectedTag]);
 }

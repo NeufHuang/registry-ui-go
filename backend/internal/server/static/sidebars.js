@@ -19,10 +19,11 @@ async function loadRecent() {
           await selectRepo(repo);
         } else {
           state.selectedTag = '';
+          state.selectedRepo = repo;
           state.digest = '';
           state.manifest = null;
           clearDetails();
-          renderTags();
+          renderTree();
         }
         if (ref) await selectTag(ref);
       };
@@ -77,7 +78,7 @@ async function loadRecycle() {
         await api(`/api/recycle/${b.dataset.recycleRestore}/restore`, {method:'POST'});
         toast(t('restored'));
         await loadRecycle();
-        if (state.selectedRepo) await loadTags();
+        if (state.selectedRepo) { if (typeof refreshTreeTags === 'function') await refreshTreeTags(); else await loadTags(); }
       } catch (e) {
         // api() exposes the machine-readable code (e.g. "gc_expired"), which is
         // what the 410 response carries; matching on the free-text message never

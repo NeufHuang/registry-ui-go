@@ -162,19 +162,18 @@ el('createNamespaceBtn').onclick = async () => {
   });
 };
 // ⋮ dropdown toggles
-['repoMoreBtn','tagMoreBtn','manifestMoreBtn'].forEach(id => {
+['treeMoreBtn','manifestMoreBtn'].forEach(id => {
   const btn = el(id);
   if (btn) btn.onclick = (e) => { e.stopPropagation(); const dd = el(id.replace('Btn','Dropdown')); if (dd) { const show = dd.classList.contains('hidden-ui'); dd.classList.toggle('hidden-ui'); if (show) { const r = btn.getBoundingClientRect(); dd.style.top = (r.bottom + 8) + 'px'; dd.style.right = (window.innerWidth - r.right) + 'px'; } } };
 });
 document.addEventListener('click', () => { document.querySelectorAll('[id$=Dropdown]').forEach(d => d.classList.add('hidden-ui')); });
 [].forEach.call(document.querySelectorAll('[id$=Dropdown]'), d => { d.addEventListener('click', e => e.stopPropagation()); });
-el('refreshTagsBtn').onclick = async () => { if (state.selectedRepo) try { await loadTags(); } catch(e) { toast(e.message, true); } };
-el('repoSearch').oninput = renderRepos; el('namespaceFilter').onchange = () => { const ns = el('namespaceFilter').value; if (state.selectedRepo && ns && namespaceOf(state.selectedRepo) !== ns) { state.selectedRepo = ''; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = []; el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderTags(); const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); } renderRepos(); updateRepoActions(); }; el('tagSearch').oninput = renderTags;
+el('refreshTagsBtn').onclick = async () => { if (state.selectedRepo) try { await refreshTreeTags(); } catch(e) { toast(e.message, true); } };
+el('repoSearch').oninput = renderTreeView; el('namespaceFilter').onchange = () => { const ns = el('namespaceFilter').value; if (state.selectedRepo && ns && namespaceOf(state.selectedRepo) !== ns) { state.selectedRepo = ''; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = []; el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderTree(); const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui'); } renderTree(); updateRepoActions(); }; el('tagSearch').oninput = renderTreeView;
 el('deleteSelectedTagsBtn').onclick = async () => { try { await deleteTags([...state.selectedTags]); } catch(e) { toast(e.message, true); } };
 el('favoriteBtn').onclick = async () => { try { await favoriteCurrent(); } catch(e) { toast(e.message, true); } };
 el('recentRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecent(); }; el('favoritesRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadFavorites(); }; el('auditRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadAudit(); }; el('recycleRefreshBtn').onclick = e => { e.preventDefault(); e.stopPropagation(); loadRecycle(); };
 (async()=>{ try { await loadUser(); if (state.user && state.user.mustChangePassword) { showModal('profileModal'); toast(t('mustChangePassword'), true, true); return; } await loadSettings(); await checkHealth(); await loadRepos(true); await refreshSidebars(); } catch(e) { toast(e.message, true); } })();
-
 // File upload button click handlers (moved from DOMContentLoaded for module script compatibility)
 document.getElementById('settingLogoFileBtn')?.addEventListener('click', (e) => { e.preventDefault(); document.getElementById('settingLogoFile').click(); });
 document.getElementById('profileAvatarFileBtn')?.addEventListener('click', (e) => { e.preventDefault(); document.getElementById('profileAvatarFile').click(); });

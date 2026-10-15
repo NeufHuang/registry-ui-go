@@ -11,7 +11,16 @@ async function loadRepos(reset=false) {
   } while (next && guard < 20);
   state.nextLast = next;
   try { const {data: nsData} = await api('/api/namespaces'); state.namespaces = (nsData.namespaces || []).map(n => n.name); } catch (e) { console.warn('loadRepos: failed to load namespaces', e); }
+  if (typeof pruneTreeCache === 'function') pruneTreeCache();
   renderNamespaces(); renderRepos(); updateRepoActions();
+}
+
+// The repo list is now rendered as a directory tree (see tree.js), which shows
+// the namespace -> repo -> tag hierarchy in one column. renderRepos() is kept
+// as the tree entry point: it rebuilds the tree data and re-renders it.
+function renderRepos() {
+  if (typeof renderTreeView === 'function') { renderTreeView(); return; }
+  renderFlatRepos();
 }
 function renderNamespaces() {
   const sel = el('namespaceFilter'); const current = sel.value;
@@ -34,7 +43,9 @@ function updateRepoBulkBar() {
   el('selectedRepoCount').classList.toggle('hidden-ui', count === 0);
 }
 
-function renderRepos() {
+// Legacy flat list. Kept as a fallback in case tree.js fails to load; the
+// directory tree in tree.js is the normal rendering path.
+function renderFlatRepos() {
   const q = el('repoSearch').value.trim().toLowerCase(); const ns = el('namespaceFilter').value;
   const repos = state.repos.filter(r => (!q || r.toLowerCase().includes(q)) && (!ns || namespaceOf(r) === ns));
   repoList.innerHTML = ''; if (!repos.length) {
@@ -67,14 +78,14 @@ async function checkRepoProtection(repo) {
 async function selectRepo(repo) {
   if (repo === state.selectedRepo) {
     state.selectedRepo = ''; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = [];
-    el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderRepos(); renderTags(); updateRepoActions();
+    el('selectedRepo').textContent = t('selectImage'); clearDetails(); renderTree(); updateRepoActions();
     if (typeof applyRepoDescriptionPermissions === 'function') applyRepoDescriptionPermissions();
     const icon = el('tagImmutableIcon'); if (icon) icon.classList.add('hidden-ui');
     await refreshSidebars();
     return;
   }
   state.selectedRepo = repo; state.selectedTag = ''; state.selectedTags.clear(); state.digest = ''; state.manifest = null; state.tags = [];
-  el('selectedRepo').textContent = repo; clearDetails(); renderRepos(); updateRepoActions(); await loadTags(); await refreshSidebars();
+  el('selectedRepo').textContent = repo; clearDetails(); renderTree(); updateRepoActions(); await loadTags(); await refreshSidebars();
   await loadRepoDescription(repo);
   if (typeof applyRepoDescriptionPermissions === 'function') applyRepoDescriptionPermissions();
   await checkRepoProtection(repo);

@@ -32,6 +32,8 @@ const t = (key, vars={}) => {
   return v;
 };
 const repoList = el('repoList');
+// The tag panel was replaced by the directory tree in tree.js, so #tagList no
+// longer exists; the legacy flat-list fallback in tags.js guards on this.
 const tagList = el('tagList');
 const manifestEl = el('manifest');
 const summaryEl = el('summary');
