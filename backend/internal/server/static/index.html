@@ -100,18 +100,20 @@
         </nav>
         <div id="settingsTabUi" class="tab-content active">
         <p id="authOffHint" class="hint hidden-ui" style="margin:0 0 10px" data-i18n="authOffHint">当前以 AUTH_MODE=off 运行：用户管理、API Token 和 Webhook 等管理员功能已停用，切换到 basic 认证后可用。</p>
-        <div class="profile-card" style="margin-bottom:12px">
-          <img id="settingLogoPreview" class="avatar large" alt="logo" />
-          <div style="flex:1"><b>Logo</b><p class="hint">设置后将显示在顶部导航栏</p></div>
+        <div class="settings-form-section">
+          <div class="profile-card">
+            <img id="settingLogoPreview" class="avatar large" alt="logo" />
+            <div style="flex:1"><b>Logo</b><p class="hint">设置后将显示在顶部导航栏</p></div>
+          </div>
+          <label><span data-i18n="appLogo">Logo</span><input id="settingAppLogo" data-i18n-placeholder="appLogoPlaceholder" placeholder="RU / https://... / data:image..." autocomplete="off" /></label>
+          <div><span data-i18n="uploadLogo">上传 Logo</span><div class="file-button-row"><label class="file-button"><button id="settingLogoFileBtn" type="button" class="ghost" data-i18n="selectFile"></button><input id="settingLogoFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" /></label>
+          <button id="uploadLogoBtn" type="button" class="ghost" data-i18n="uploadLogo"></button></div></div>
+          <label><span data-i18n="appTitle">标题</span><input id="settingAppTitle" data-i18n-placeholder="appTitlePlaceholder" placeholder="Registry UI" autocomplete="off" /></label>
+          <label><span data-i18n="appSubtitle">副标题</span><input id="settingAppSubtitle" data-i18n-placeholder="appSubtitlePlaceholder" placeholder="私有 Docker / OCI Registry 管理" autocomplete="off" /></label>
+          <label><span data-i18n="pageSize">每页镜像数</span><input id="settingPageSize" type="number" min="10" max="500" autocomplete="off" /></label>
+          <label class="switch-row"><span data-i18n="showAudit">显示审计日志</span><input id="settingShowAudit" type="checkbox" /><span class="switch-pill" aria-hidden="true"></span></label>
         </div>
-        <label><span data-i18n="appLogo">Logo</span><input id="settingAppLogo" data-i18n-placeholder="appLogoPlaceholder" placeholder="RU / https://... / data:image..." autocomplete="off" /></label>
-        <div><span data-i18n="uploadLogo">上传 Logo</span><div class="file-button-row"><label class="file-button"><button id="settingLogoFileBtn" type="button" class="ghost" data-i18n="selectFile"></button><input id="settingLogoFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" /></label>
-        <button id="uploadLogoBtn" type="button" class="ghost" data-i18n="uploadLogo"></button></div></div>
-        <label><span data-i18n="appTitle">标题</span><input id="settingAppTitle" data-i18n-placeholder="appTitlePlaceholder" placeholder="Registry UI" autocomplete="off" /></label>
-        <label><span data-i18n="appSubtitle">副标题</span><input id="settingAppSubtitle" data-i18n-placeholder="appSubtitlePlaceholder" placeholder="私有 Docker / OCI Registry 管理" autocomplete="off" /></label>
-        <label><span data-i18n="pageSize">每页镜像数</span><input id="settingPageSize" type="number" min="10" max="500" autocomplete="off" /></label>
-        <label class="switch-row" style="margin-top:20px"><span data-i18n="showAudit">显示审计日志</span><input id="settingShowAudit" type="checkbox" /><span class="switch-pill" aria-hidden="true"></span></label>
-        <div class="status-card" style="margin-top:16px">
+        <div class="status-card">
           <div class="status-card-head"><span data-i18n="tlsSettings">HTTPS / TLS</span></div>
           <label class="switch-row"><span data-i18n="tlsEnable">启用 HTTPS</span><input id="settingTlsEnabled" type="checkbox" /><span class="switch-pill" aria-hidden="true"></span></label>
           <p class="hint" data-i18n="tlsRestartHint" style="margin:0">需上传证书并重启服务后生效。</p>
@@ -121,7 +123,7 @@
             <button id="tlsUploadCertBtn" type="button" class="ghost" data-i18n="tlsUploadCert">上传证书</button>
           </div>
         </div>
-        <div class="status-card" style="margin-top:16px">
+        <div class="status-card">
           <div class="status-card-head"><span data-i18n="registryStatus">Registry 状态</span><strong id="registryStatusBadge">-</strong></div>
           <div class="summary-grid" style="margin-top:4px;gap:6px;grid-template-columns:repeat(2,minmax(0,1fr))">
             <div class="card"><b data-i18n="repositories">仓库</b><span id="statusRepoCount">-</span></div>
@@ -159,11 +161,11 @@
         </div>
         <div id="settingsTabAdmin" class="tab-content">
         <div class="section-title" style="margin-top:0"><span data-i18n="globalTagPolicy">全局默认保护模式</span></div>
-        <div style="margin-top:4px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px;padding:6px 0">
-          <p class="hint" data-i18n="globalPolicyHint" style="margin:0 0 4px">仓库级设置可在 Tag 策略弹窗中覆盖此默认值</p>
+        <div class="settings-form-section">
+          <p class="hint" style="margin:0" data-i18n="globalPolicyHint">仓库级设置可在 Tag 策略弹窗中覆盖此默认值</p>
           <div class="field-row" style="flex-direction:column;align-items:stretch">
             <b data-i18n="protectionMode">保护模式</b>
-            <div style="display:flex;flex-direction:row;flex-wrap:nowrap;gap:14px;margin-top:4px;white-space:nowrap">
+            <div class="radio-row">
               <div style="display:flex;align-items:center;gap:4px;flex:0 0 auto">
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="globalProtectionMode" value="overwrite" /><span data-i18n="protectionOverwriteShort">允许覆盖</span></label>
                 <span class="help-dot" tabindex="0" data-i18n-title="protectionOverwrite">?</span>
@@ -180,7 +182,7 @@
           </div>
           <div class="field-row" style="flex-direction:column;align-items:stretch" id="globalOverwriteActionRow">
             <b data-i18n="overwriteAction">覆盖动作</b>
-            <div style="display:flex;flex-direction:row;flex-wrap:nowrap;gap:14px;margin-top:4px;white-space:nowrap">
+            <div class="radio-row">
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="globalOverwriteAction" value="recycle" /><span data-i18n="overwriteRecycle">进回收站</span></label>
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="globalOverwriteAction" value="delete" /><span data-i18n="overwriteDelete">直接删除</span></label>
             </div>
@@ -191,8 +193,6 @@
           </div>
           <label class="switch-row"><span data-i18n="allowAnonymousPull">允许匿名拉取</span><input id="settingAllowAnonymousPull" type="checkbox" /><span class="switch-pill" aria-hidden="true"></span></label>
           <label class="switch-row"><span data-i18n="pushCreateRepo">推送时自动建仓</span><input id="settingPushCreateRepo" type="checkbox" /><span class="switch-pill" aria-hidden="true"></span></label>
-        </div>
-        <div style="margin-top:12px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px;padding:6px 0">
           <label><span data-i18n="recycleGCDays">回收站 GC 保留天数</span><input id="settingRecycleGCDays" type="number" min="0" max="365" autocomplete="off" /></label>
         </div>
         <div class="section-title"><span data-i18n="immutableRules">不可变 Tag</span><span class="help-dot" tabindex="0" data-i18n-title="immutableRulesHelp">?</span></div>
@@ -305,40 +305,42 @@
             <div class="card"><b data-i18n="size">Size</b><span id="tagStatsSize">-</span></div>
             <div class="card"><b data-i18n="pendingGC">待 GC</b><span id="tagStatsPendingGC">-</span></div>
           </div>
-          <div class="field-row" style="flex-direction:column;align-items:stretch">
-            <b data-i18n="protectionMode">保护模式</b>
-            <div style="display:flex;flex-direction:row;flex-wrap:nowrap;gap:14px;margin-top:4px;white-space:nowrap">
-              <div style="display:flex;align-items:center;gap:4px;flex:0 0 auto">
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="protectionMode" value="overwrite" /><span data-i18n="protectionOverwriteShort">允许覆盖</span></label>
-                <span class="help-dot" tabindex="0" data-i18n-title="protectionOverwrite">?</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:4px;flex:0 0 auto">
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="protectionMode" value="immutable" /><span data-i18n="protectionImmutableShort">不可变</span></label>
-                <span class="help-dot" tabindex="0" data-i18n-title="protectionImmutable">?</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:4px;flex:0 0 auto">
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="protectionMode" value="rules" /><span data-i18n="protectionRulesShort">规则匹配</span></label>
-                <span class="help-dot" tabindex="0" data-i18n-title="protectionRules">?</span>
-              </div>
-            </div>
-          </div>
-          <div id="tagOverwriteActionRow" class="field-row" style="flex-direction:column;align-items:stretch">
-            <b data-i18n="overwriteAction">覆盖动作</b>
-            <div style="display:flex;gap:12px;margin-top:4px;flex-wrap:nowrap;white-space:nowrap">
-              <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
-                <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="overwriteAction" value="recycle" /><span data-i18n="recycleGCShort">回收</span></label>
-                <span class="help-dot" tabindex="0" data-i18n-title="recycleGC">?</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
-                <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="overwriteAction" value="keep" /><span data-i18n="keepUntaggedShort">保留</span></label>
-                <span class="help-dot" tabindex="0" data-i18n-title="keepUntagged">?</span>
+          <div class="tag-settings-section">
+            <div class="field-row" style="flex-direction:column;align-items:stretch;border:0;padding:0;background:none">
+              <b data-i18n="protectionMode">保护模式</b>
+              <div class="radio-row">
+                <div style="display:flex;align-items:center;gap:4px;flex:0 0 auto">
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="protectionMode" value="overwrite" /><span data-i18n="protectionOverwriteShort">允许覆盖</span></label>
+                  <span class="help-dot" tabindex="0" data-i18n-title="protectionOverwrite">?</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;flex:0 0 auto">
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="protectionMode" value="immutable" /><span data-i18n="protectionImmutableShort">不可变</span></label>
+                  <span class="help-dot" tabindex="0" data-i18n-title="protectionImmutable">?</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;flex:0 0 auto">
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="protectionMode" value="rules" /><span data-i18n="protectionRulesShort">规则匹配</span></label>
+                  <span class="help-dot" tabindex="0" data-i18n-title="protectionRules">?</span>
+                </div>
               </div>
             </div>
+            <div id="tagOverwriteActionRow" class="field-row" style="flex-direction:column;align-items:stretch;border:0;padding:0;background:none">
+              <b data-i18n="overwriteAction">覆盖动作</b>
+              <div class="radio-row">
+                <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
+                  <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="overwriteAction" value="recycle" /><span data-i18n="recycleGCShort">回收</span></label>
+                  <span class="help-dot" tabindex="0" data-i18n-title="recycleGC">?</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
+                  <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="overwriteAction" value="keep" /><span data-i18n="keepUntaggedShort">保留</span></label>
+                  <span class="help-dot" tabindex="0" data-i18n-title="keepUntagged">?</span>
+                </div>
+              </div>
+            </div>
+            <label class="switch-row"><span data-i18n="anonymousPull">允许匿名拉取</span><input id="tagSettingAnonymousPull" type="checkbox" /><span class="switch-pill"></span></label>
+            <label class="switch-row"><span data-i18n="pushCreateRepo">允许推送创建</span><input id="tagSettingPushCreateRepo" type="checkbox" /><span class="switch-pill"></span></label>
+            <label><span><span data-i18n="retentionKeepCount">保留 Tag 个数</span><span class="help-dot" tabindex="0" data-i18n-title="retentionKeepCountHelp">?</span></span><input id="tagSettingKeepCount" type="number" min="0" placeholder="0=不限制" autocomplete="off" /></label>
+            <button id="retentionPreviewBtn" type="button" class="ghost" data-i18n="retentionPreview">预览清理</button>
           </div>
-          <label class="switch-row"><span data-i18n="anonymousPull">允许匿名拉取</span><input id="tagSettingAnonymousPull" type="checkbox" /><span class="switch-pill"></span></label>
-          <label class="switch-row"><span data-i18n="pushCreateRepo">允许推送创建</span><input id="tagSettingPushCreateRepo" type="checkbox" /><span class="switch-pill"></span></label>
-          <label><span><span data-i18n="retentionKeepCount">保留 Tag 个数</span><span class="help-dot" tabindex="0" data-i18n-title="retentionKeepCountHelp">?</span></span><input id="tagSettingKeepCount" type="number" min="0" placeholder="0=不限制" autocomplete="off" /></label>
-          <button id="retentionPreviewBtn" type="button" class="ghost" data-i18n="retentionPreview">预览清理</button>
         </div>
         <div class="modal-foot"><button id="tagSettingsCancelBtn" type="button" data-i18n="cancel">取消</button><button id="tagSettingsSaveBtn" data-i18n="save">保存</button></div>
       </div>

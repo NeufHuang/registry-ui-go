@@ -2,7 +2,8 @@
 .card{border:1px solid var(--border);border-radius:12px;padding:10px;background:var(--panel2);min-width:0}
 .card b{display:block;color:var(--muted);font-size:12px}
 .card span{display:block;word-break:break-all;margin-top:4px}
-.manifest{margin:0;padding:12px;border-radius:12px;background:var(--input);border:1px solid var(--border);overflow:auto;min-height:260px;color:var(--text)}
+.manifest{margin:0;padding:12px;border-radius:12px;background:var(--input);border:1px solid var(--border);overflow:auto;min-height:260px;color:var(--text);scrollbar-width:none}
+.manifest::-webkit-scrollbar{width:0;height:0}
 .toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;box-shadow:0 10px 30px var(--shadow);max-width:420px;z-index:300}
 .toast.err{border-color:var(--danger);color:var(--danger)}
 .hidden{display:none}

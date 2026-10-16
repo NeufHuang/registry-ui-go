@@ -2,7 +2,22 @@
 
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:center;justify-content:center}.modal-panel{background:var(--panel);border:1px solid var(--border);border-radius:16px;box-shadow:0 16px 48px var(--shadow);max-width:min(540px,calc(100vw-36px));max-height:calc(100vh-48px);display:flex;flex-direction:column}.modal-title{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 0}.modal-title h3{margin:0}.modal-body{flex:1;overflow:auto;padding:12px 18px;scrollbar-width:none}.modal-body::-webkit-scrollbar,.modal-scroll::-webkit-scrollbar{width:0;height:0}.modal-scroll{display:flex;flex-direction:column;flex:1;overflow:auto;min-height:0;scrollbar-width:none}.modal-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border)}.modal-close{font-size:24px;background:none;border:0;color:var(--muted);cursor:pointer}.settings-modal{max-width:min(620px,calc(100vw-36px));max-height:calc(100vh - 120px)}
 #settingsWidthAnchor{height:0}
-.settings-modal .modal-scroll{padding:0 18px}.settings-modal .modal-body{min-height:400px;display:flex;flex-direction:column}.settings-modal .status-card{max-width:100%;overflow:hidden}.settings-modal input{min-width:0}.delete-modal{width:min(620px,calc(100vw-36px))}.delete-details{margin:0;white-space:pre-wrap;user-select:text;max-height:260px;overflow:auto;padding:12px;border-radius:12px;background:var(--input);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.45}
+.settings-modal .modal-scroll{padding:0 18px}.settings-modal .modal-body{min-height:400px;display:flex;flex-direction:column}.settings-modal .status-card{max-width:100%;overflow:hidden}.settings-modal input{min-width:0}
+
+/* Settings modal form polish: group related controls into bordered cards,
+   give radio rows room to wrap on narrow panels, and space sections evenly. */
+.settings-form-section{border:1px solid var(--border);border-radius:14px;background:var(--panel2);padding:12px;display:flex;flex-direction:column;gap:10px;margin:0 0 12px}
+.settings-form-section>label>span,.settings-form-section>div>span[data-i18n]{display:block;color:var(--muted);font-size:13px;margin-bottom:4px}
+.settings-form-section .switch-row{background:var(--panel)}
+.settings-modal .tab-content>.status-card{margin-bottom:12px}
+.radio-row{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:4px}
+.radio-row label{display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
+.radio-row input[type=radio]{width:auto;accent-color:var(--accent)}
+.tag-settings-section{border:1px solid var(--border);border-radius:14px;background:var(--panel2);padding:12px;display:flex;flex-direction:column;gap:10px;margin:0}
+.tag-settings-section .switch-row{background:var(--panel)}
+.tag-settings-section .radio-row{margin-top:2px}
+
+.delete-modal{width:min(620px,calc(100vw-36px))}.delete-details{margin:0;white-space:pre-wrap;user-select:text;max-height:260px;overflow:auto;padding:12px;border-radius:12px;background:var(--input);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.45}
 @media (max-height:720px){.modal-panel{max-height:calc(100vh - 24px)}.modal-body,.modal-scroll{gap:8px}.delete-details{max-height:180px}}
 
 /* Remove legacy dialog display overrides */
