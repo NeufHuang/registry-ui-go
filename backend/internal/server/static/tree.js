@@ -136,24 +136,39 @@ function renderTree() {
       // loaded tag), so their tags are not rendered either.
       if (!repoMatchesQuery(repo, tags)) continue;
       const isRepoFolded = !searching && treeState.folded.has(repo);
+      // Only a repo whose tag list has been fetched and came back empty is a
+      // leaf; an unloaded repo still gets an arrow so the tree looks uniform
+      // before the lazy fetch fills it in. An unloaded repo has nothing
+      // expanded below it, so its arrow must always render collapsed (pointing
+      // right) — using the folded flag alone would draw it as expanded, since
+      // an unloaded repo is never in the folded set.
+      const repoIsLeaf = treeState.loaded.has(repo) && !tags.length;
+      const arrowFolded = treeState.loaded.has(repo) ? isRepoFolded : true;
       const active = repo === state.selectedRepo;
       nsNode.appendChild(treeNode(1, `repo-row ${active ? 'selected' : ''}`, `
         <input type="checkbox" data-repo-check="${esc(repo)}" ${state.selectedRepos.has(repo) ? 'checked' : ''} aria-label="${esc(repo)}" />
-        ${arrowHtml(isRepoFolded, !tags.length)}
+        ${arrowHtml(arrowFolded, repoIsLeaf)}
         <span class="tree-label" title="${esc(repo)}">🗂 ${esc(imageNameInNamespace(repo))}</span>
         ${tags.length ? `<span class="tree-count">${tags.length}</span>` : ''}`,
         (row) => {
           const arrow = row.querySelector('.tree-arrow');
           if (!arrow.classList.contains('empty')) {
-            arrow.onclick = (e) => { e.stopPropagation(); toggleFold(repo); };
-            arrow.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleFold(repo); } };
+            // For a repo whose tags are not loaded yet, the arrow click also
+            // goes through expandRepo so the lazy fetch is triggered; for a
+            // loaded repo it folds/unfolds the cached tag list.
+            const arrowAction = treeState.loaded.has(repo)
+              ? () => toggleFold(repo)
+              : () => { void expandRepo(repo); };
+            arrow.onclick = (e) => { e.stopPropagation(); arrowAction(); };
+            arrow.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); arrowAction(); } };
           }
           row.onclick = () => { void expandRepo(repo); };
           const box = row.querySelector('[data-repo-check]');
           box.onclick = (e) => e.stopPropagation();
           box.onchange = () => { box.checked ? state.selectedRepos.add(repo) : state.selectedRepos.delete(repo); renderTree(); };
         }));
-
+      // Folded state only matters once the tag list is loaded; an unloaded
+      // repo simply renders as a collapsed row with a clickable arrow.
       if (isRepoFolded) continue;
       const repoNode = nsNode.lastChild;
       // When the query matched the repository name itself, show every tag; when
