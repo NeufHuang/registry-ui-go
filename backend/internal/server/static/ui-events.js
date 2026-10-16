@@ -23,6 +23,11 @@ el('settingsBtn').onclick = () => {
     const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
     if (btn) btn.style.display = isAdmin ? '' : 'none';
   });
+  // In auth-off mode the admin tabs are hidden (the routes really do 403), but
+  // say so explicitly instead of leaving the user to wonder where user
+  // management went.
+  const authOffHint = el('authOffHint');
+  if (authOffHint) authOffHint.classList.toggle('hidden-ui', isAdmin);
   const gcBtn = el('runManualGC');
   if (gcBtn) gcBtn.style.display = canAdminister ? '' : 'none';
   if (isAdmin) {
