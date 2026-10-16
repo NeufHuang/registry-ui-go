@@ -21,6 +21,7 @@ async function loadUsers() {
       // Admins already have all-namespace access; the permissions panel
       // is not useful for them.
       const permsBtn = user.isAdmin ? '' : `<button class="ghost edit-user-perms" data-user-id="${user.id}" type="button">${t('permissions')}</button>`;
+      const editBtn = `<button class="ghost edit-user" data-user-id="${user.id}" data-username="${esc(user.username)}" data-is-admin="${user.isAdmin}" type="button">${t('edit')}</button>`;
       // An admin cannot delete their own account (would lock themselves
       // out of the UI). The backend also rejects this; we hide the
       // button so the constraint is obvious.
@@ -32,6 +33,7 @@ async function loadUsers() {
               <strong>${esc(user.username)}</strong> ${adminBadge}
             </div>
             <div>
+              ${editBtn}
               ${permsBtn}
               ${statusBtn}
               ${deleteBtn}
@@ -43,6 +45,9 @@ async function loadUsers() {
     }
     userList.innerHTML = html;
     // Bind events
+    document.querySelectorAll('.edit-user').forEach(btn => {
+      btn.onclick = async () => await showEditUserDialog(btn.dataset.userId, btn.dataset.username, btn.dataset.isAdmin === 'true');
+    });
     document.querySelectorAll('.toggle-user-enabled').forEach(btn => {
       btn.onclick = async () => await toggleUserEnabled(btn.dataset.userId, btn.dataset.username, btn.dataset.enabled === 'true');
     });
@@ -216,6 +221,38 @@ async function toggleUserPermissions(userId) {
   panel.appendChild(cols);
 }
 
+// Rename a user, promote/demote them to admin, or reset their password —
+// the backend PUT accepts all four fields, but until now the UI only
+// offered the enable/disable toggle. Resetting a password requires the
+// typed confirmation because it silently invalidates the user's sessions.
+async function showEditUserDialog(userId, username, isAdmin) {
+  const ok = await openFormDialog({
+    title: t('editUser') || 'Edit User',
+    message: username,
+    fields: [
+      {key: 'username', label: t('userManagement') === '用户管理' ? '用户名' : 'Username', value: username},
+      {key: 'password', label: t('newPassword') || 'New Password', type: 'password', placeholder: t('resetPasswordHint') || 'leave blank to keep the current password'},
+      {key: 'makeAdmin', label: t('admin'), type: 'checkbox', checked: isAdmin},
+    ],
+    submitLabel: t('save'),
+    submit: async (v) => {
+      const newUsername = (v.username || '').trim();
+      if (!newUsername) return {ok: false, error: 'username required'};
+      const body = {username: newUsername, isAdmin: !!v.makeAdmin, enabled: true};
+      if (v.password) {
+        if (String(v.password).length < 6) return {ok: false, error: t('passwordTooShort') || 'password must be at least 6 characters'};
+        body.password = v.password;
+      }
+      try {
+        await api(`/api/admin/users/${userId}`, {method:'PUT', body: JSON.stringify(body)});
+        toast(t('saved')); await loadUsers();
+        return {ok: true};
+      } catch (e) { return {ok: false, error: e.message}; }
+    },
+  });
+  return ok;
+}
+
 async function toggleUserEnabled(userId, username, currentlyEnabled) {
   // The confirm dialog mirrors the delete-user pattern but uses a
   // friendlier copy ("Disable" / "Re-enable") appropriate to the
@@ -295,8 +332,20 @@ async function loadImmutableRules() {
       `<div class="compact-card"><div class="cc-text"><strong>${esc(r.pattern)}</strong><small>${esc(r.description||'')}</small></div><button class="ghost danger del-immutable-rule" data-id="${r.id}" type="button">×</button></div>`
     ).join('') || `<div class="hint">${t('noRules')}</div>`;
     list.querySelectorAll('.del-immutable-rule').forEach(b => b.onclick = async () => {
-      await api(`/api/admin/immutable-rules/${b.dataset.id}`, {method:'DELETE'});
-      toast(t('saved')); await loadImmutableRules();
+      const rule = (data.rules || []).find(x => String(x.id) === b.dataset.id);
+      // Consistent with every other destructive action in the settings modal:
+      // a rule removed by a stray click silently re-opens the tags it protected.
+      const ok = await openDeleteConfirm({
+        title: t('deleteRule') || 'Delete Rule',
+        message: t('confirmDeleteRule') || 'Delete this immutable rule?',
+        details: rule ? rule.pattern : '',
+        expected: 'DELETE',
+      });
+      if (!ok) return;
+      try {
+        await api(`/api/admin/immutable-rules/${b.dataset.id}`, {method:'DELETE'});
+        toast(t('saved')); await loadImmutableRules();
+      } catch (e) { toast(e.message, true); }
     });
   } catch(e) { el('immutableRuleList').innerHTML = `<div class="hint error">${esc(e.message)}</div>`; }
 }
@@ -328,7 +377,7 @@ async function loadTokens() {
     const {data} = await api('/api/admin/tokens');
     const list = el('tokenList');
     list.innerHTML = (data.tokens || []).map(tk =>
-      `<div class="compact-card"><div class="cc-text"><strong>${esc(tk.name)}</strong><small>${esc(tk.description||'')} · prefix: ${esc(tk.tokenPrefix)}${tk.expiresAt ? ' · expires: '+esc(tk.expiresAt) : ''}</small></div><button class="ghost danger del-token" data-id="${tk.id}" type="button">×</button></div>`
+      `<div class="compact-card"><div class="cc-text"><strong>${esc(tk.name)}</strong><small>${esc(tk.description||'')}${tk.description ? ' · ' : ''}prefix: ${esc(tk.tokenPrefix)}${tk.expiresAt ? ' · expires: '+esc(tk.expiresAt.slice(0,10)) : ''}${tk.lastUsedAt ? ' · '+esc(t('lastUsed'))+': '+esc(tk.lastUsedAt.slice(0,10)) : ''}</small></div><button class="ghost danger del-token" data-id="${tk.id}" type="button">×</button></div>`
     ).join('') || `<div class="hint">-</div>`;
     list.querySelectorAll('.del-token').forEach(b => b.onclick = async () => {
       // Revoking is irreversible and the token is not recoverable afterwards,
@@ -352,6 +401,7 @@ async function showCreateTokenDialog() {
     title: t('createToken'),
     fields: [
       {key: 'name', label: t('tokenName'), placeholder: 'ci-deploy'},
+      {key: 'description', label: t('tokenDescription') || 'Description', placeholder: t('tokenDescriptionPlaceholder') || 'what this token is for'},
       {key: 'expiresIn', label: t('tokenExpiresIn'), type: 'number', value: 0, min: 0},
     ],
     submitLabel: t('save'),
@@ -360,7 +410,7 @@ async function showCreateTokenDialog() {
       if (!name) return {ok: false, error: 'name required'};
       const expiresIn = v.expiresIn == null ? 0 : Number(v.expiresIn) || 0;
       try {
-        const {data} = await api('/api/admin/tokens', {method:'POST', body: JSON.stringify({name, description: '', expiresIn})});
+        const {data} = await api('/api/admin/tokens', {method:'POST', body: JSON.stringify({name, description: (v.description || '').trim(), expiresIn})});
         await loadTokens();
         return {ok: true, keepOpen: true, resultHtml: `<strong>${esc(t('tokenCreated'))}</strong><pre>${esc(data.fullToken)}</pre>`};
       } catch (e) { return {ok: false, error: e.message}; }
