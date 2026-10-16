@@ -539,9 +539,16 @@ async function loadRepoDescription(repo) {
 // it to users who can actually write the repository: the server answers 403 for
 // everyone else, and offering a dialog that is guaranteed to fail is worse than
 // not offering it.
+// The pencil mirrors the favorite star's lifecycle: disabled until a repo is
+// selected, and hidden entirely when the user has no write access (the server
+// would 403 the save, and offering a dialog that always fails is worse than
+// not offering it).
 function applyRepoDescriptionPermissions() {
   const btn = el('editRepoDescBtn');
-  if (btn) btn.classList.toggle('hidden-ui', !canWriteRepo(state.selectedRepo));
+  if (!btn) return;
+  const writable = canWriteRepo(state.selectedRepo);
+  btn.disabled = !state.selectedRepo;
+  btn.classList.toggle('hidden-ui', !writable);
 }
 
 function simpleMarkdown(text) {
