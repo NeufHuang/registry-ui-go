@@ -177,7 +177,7 @@ function renderTree() {
           <span class="tree-arrow empty"></span>
           <span class="tree-label" title="${esc(repo)}:${esc(tag)}">${esc(tag)}</span>`,
           (row) => {
-            row.onclick = (e) => { if (e.target.closest('[data-tag-check]')) return; selectTag(tag); };
+            row.onclick = (e) => { if (e.target.closest('[data-tag-check]')) return; selectTag(tag, repo); };
             const box = row.querySelector('[data-tag-check]');
             box.onclick = (e) => e.stopPropagation();
             box.onchange = () => {

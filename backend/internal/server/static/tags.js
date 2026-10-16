@@ -46,7 +46,12 @@ function updateTagBulkBar() {
   el('selectedTagCount').textContent = t('selectedCount', {count});
   el('selectedTagCount').classList.toggle('hidden-ui', count === 0);
 }
-async function selectTag(tag) {
+// repoOverride: the tree passes the repo owning the row, because a repo can
+// be deselected (second click) while its tag list stays expanded — in that
+// state state.selectedRepo is empty and the manifest request would 404.
+async function selectTag(tag, repoOverride) {
+  const repo = repoOverride || state.selectedRepo;
+  if (!repo) { toast(t('noRepoSelected'), true); return; }
   if (tag === state.selectedTag) {
     state.selectedTag = ''; clearDetails(); renderTags(); await refreshSidebars();
     return;
@@ -55,8 +60,12 @@ async function selectTag(tag) {
   // stale entry in state.selectedTags would make the next bulk delete silently
   // include a tag the user checked earlier and then navigated away from.
   state.selectedTags.clear();
-  state.selectedTag = tag; const refEl = el('selectedRef'); refEl.textContent = `${state.selectedRepo}:${tag}`; refEl.classList.remove('hidden-ui');
-  const {data} = await api(`/api/repositories/${encodeRepo(state.selectedRepo)}/manifests/${encodeURIComponent(tag)}`);
+  // A tag clicked from the tree (possibly on a deselected repo) points the
+  // whole detail state at that repo, so the ref, the manifest fetch and a
+  // later favorite/delete all act on the same pair.
+  state.selectedRepo = repo;
+  state.selectedTag = tag; const refEl = el('selectedRef'); refEl.textContent = `${repo}:${tag}`; refEl.classList.remove('hidden-ui');
+  const {data} = await api(`/api/repositories/${encodeRepo(repo)}/manifests/${encodeURIComponent(tag)}`);
   state.manifest = data.manifest; state.digest = data.digest || ''; state.artifactType = data.artifactType || '';
   manifestEl.textContent = JSON.stringify(data.manifest, null, 2); renderSummary(data); renderPlatforms(data.manifest);
   el('favoriteBtn').disabled = false;
