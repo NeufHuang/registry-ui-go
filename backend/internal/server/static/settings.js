@@ -11,8 +11,27 @@ async function loadSettings() {
   if (el('settingRecycleGCDays')) el('settingRecycleGCDays').value = state.settings.recycleGCDays ?? '';
   if (el('settingShowAudit')) el('settingShowAudit').checked = (state.settings.showAudit ?? 'true') === 'true';
   if (el('settingTlsEnabled')) el('settingTlsEnabled').checked = (state.settings.tls_enabled ?? 'false') === 'true';
+  loadGlobalPolicyFields();
   applyTheme(); applyI18n(); applyBrand();
   loadTLSStatus();
+}
+
+// The four global policy defaults beyond protection_mode lived only in the
+// settings table before — the tab had no inputs for them, so they could only
+// be changed by editing the database. overwrite_action only applies when the
+// protection mode allows overwrites, mirroring the repo-level dialog.
+function loadGlobalPolicyFields() {
+  const s = state.settings || {};
+  const oa = document.querySelector('input[name="globalOverwriteAction"][value="' + (s.overwrite_action === 'delete' ? 'delete' : 'recycle') + '"]');
+  if (oa) oa.checked = true;
+  if (el('settingRetentionKeepCount')) el('settingRetentionKeepCount').value = s.retention_keep_count ?? '0';
+  if (el('settingAllowAnonymousPull')) el('settingAllowAnonymousPull').checked = (s.allow_anonymous_pull ?? 'false') === 'true';
+  if (el('settingPushCreateRepo')) el('settingPushCreateRepo').checked = (s.push_create_repo ?? 'true') === 'true';
+  syncGlobalOverwriteRow();
+}
+function syncGlobalOverwriteRow() {
+  const row = el('globalOverwriteActionRow');
+  if (row) row.classList.toggle('hidden-ui', document.querySelector('input[name="globalProtectionMode"]:checked')?.value !== 'overwrite');
 }
 async function saveSettings() {
   const tlsWas = (state.settings.tls_enabled ?? 'false') === 'true';
@@ -27,8 +46,15 @@ async function saveSettings() {
     theme: state.settings.theme || '',
     language: state.settings.language || '',
   };
-  // Global default protection mode
+  // Global default protection mode plus the policy defaults that used to be
+  // reachable only by editing the database.
   body['protection_mode'] = document.querySelector('input[name="globalProtectionMode"]:checked')?.value || 'rules';
+  if (!el('globalOverwriteActionRow').classList.contains('hidden-ui')) {
+    body['overwrite_action'] = document.querySelector('input[name="globalOverwriteAction"]:checked')?.value || 'recycle';
+  }
+  body['retention_keep_count'] = el('settingRetentionKeepCount').value || '0';
+  body['allow_anonymous_pull'] = String(el('settingAllowAnonymousPull').checked);
+  body['push_create_repo'] = String(el('settingPushCreateRepo').checked);
   await api('/api/settings', {method:'PUT', body:JSON.stringify(body)});
   state.settings = {...state.settings, ...body};
   applyTheme(); applyI18n(); applyBrand(); renderNamespaces(); renderRepos(); renderTags();

@@ -99,6 +99,7 @@
           <button type="button" class="tab-btn" data-tab="admin" data-i18n="adminPanel">仓库设置</button>
         </nav>
         <div id="settingsTabUi" class="tab-content active">
+        <p id="authOffHint" class="hint hidden-ui" style="margin:0 0 10px" data-i18n="authOffHint">当前以 AUTH_MODE=off 运行：用户管理、API Token 和 Webhook 等管理员功能已停用，切换到 basic 认证后可用。</p>
         <div class="profile-card" style="margin-bottom:12px">
           <img id="settingLogoPreview" class="avatar large" alt="logo" />
           <div style="flex:1"><b>Logo</b><p class="hint">设置后将显示在顶部导航栏</p></div>
@@ -177,6 +178,19 @@
               </div>
             </div>
           </div>
+          <div class="field-row" style="flex-direction:column;align-items:stretch" id="globalOverwriteActionRow">
+            <b data-i18n="overwriteAction">覆盖动作</b>
+            <div style="display:flex;flex-direction:row;flex-wrap:nowrap;gap:14px;margin-top:4px;white-space:nowrap">
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="globalOverwriteAction" value="recycle" /><span data-i18n="overwriteRecycle">进回收站</span></label>
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="globalOverwriteAction" value="delete" /><span data-i18n="overwriteDelete">直接删除</span></label>
+            </div>
+          </div>
+          <div class="field-row" style="flex-direction:column;align-items:stretch">
+            <b data-i18n="retentionKeepCount">保留 Tag 数</b>
+            <input id="settingRetentionKeepCount" type="number" min="0" autocomplete="off" style="margin-top:4px" />
+          </div>
+          <label class="switch-row"><span data-i18n="allowAnonymousPull">允许匿名拉取</span><input id="settingAllowAnonymousPull" type="checkbox" /><span class="switch-pill" aria-hidden="true"></span></label>
+          <label class="switch-row"><span data-i18n="pushCreateRepo">推送时自动建仓</span><input id="settingPushCreateRepo" type="checkbox" /><span class="switch-pill" aria-hidden="true"></span></label>
         </div>
         <div style="margin-top:12px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px;padding:6px 0">
           <label><span data-i18n="recycleGCDays">回收站 GC 保留天数</span><input id="settingRecycleGCDays" type="number" min="0" max="365" autocomplete="off" /></label>

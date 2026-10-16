@@ -55,7 +55,10 @@ async function loadGlobalTagPolicy() {
   if (modeRadio) modeRadio.checked = true;
 }
 document.querySelectorAll('input[name="globalProtectionMode"]').forEach(r => {
-  r.addEventListener('change', function() { /* no-op */ });
+  r.addEventListener('change', function() {
+    // overwrite_action only applies when overwrites are allowed at all.
+    if (typeof syncGlobalOverwriteRow === 'function') syncGlobalOverwriteRow();
+  });
 });
 el('tagSettingsCancelBtn').onclick = () => closeModal('tagSettingsModal');
 el('tagSettingsSaveBtn').onclick = async (e) => {
