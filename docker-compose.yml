@@ -12,7 +12,6 @@ services:
       SERVER_ADDR: ":8080"
       AUTH_MODE: "basic"
       V2_AUTH_MODE: "ui"
-      REGISTRY_URL: "http://registry:5000"
       ENABLE_DELETE: "true"
       DATA_DIR: "/data"
       SQLITE_PATH: "/data/db/registry-ui.db"
@@ -25,6 +24,11 @@ services:
       # directory as REGISTRY_DATA_DIR. Here both point at ./data/registry,
       # which is also what the registry container mounts as /var/lib/registry.
       REGISTRY_CONFIG: "/etc/distribution/config.yml"
+      # REGISTRY_URL is supplied below so the UI talks to the sibling service.
+      # It is scoped to this UI container only; the registry container itself
+      # must never receive REGISTRY_-prefixed variables (distribution maps them
+      # onto its own config tree), and it does not.
+      REGISTRY_URL: "http://registry:5000"
     volumes:
       - ./data:/data
     depends_on:

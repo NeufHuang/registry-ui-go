@@ -16,13 +16,17 @@ services:
       SERVER_ADDR: ":8080"
       AUTH_MODE: "basic"
       V2_AUTH_MODE: "ui"
-      REGISTRY_URL: "http://127.0.0.1:5000"
       ENABLE_DELETE: "true"
       DATA_DIR: "/data"
       SQLITE_PATH: "/data/db/registry-ui.db"
       UPLOAD_DIR: "/data/uploads"
       CERT_DIR: "/data/certs"
-      REGISTRY_DATA_DIR: "/data/registry"
-      REGISTRY_CONFIG: "/etc/distribution/config.yml"
+      # Do NOT pass REGISTRY_URL / REGISTRY_DATA_DIR / REGISTRY_CONFIG here.
+      # In aio mode the distribution registry runs in the same container and
+      # maps every REGISTRY_-prefixed variable onto its own config tree, which
+      # only produces "Ignoring unrecognized environment variable" warnings and
+      # can shadow registry-config.yml. The entrypoint already applies these
+      # defaults and hands them to the UI process only. Override them via a
+      # mounted /etc/distribution/config.yml instead.
     volumes:
       - ./data:/data
