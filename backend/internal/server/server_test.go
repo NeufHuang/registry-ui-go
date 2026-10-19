@@ -723,6 +723,42 @@ func TestCountGCDeletions(t *testing.T) {
 	}
 }
 
+// The distribution registry binary maps REGISTRY_* variables onto its own
+// config tree, so our REGISTRY_DATA_DIR would become storage.data.dir and point
+// garbage collection at the wrong root. It must never see them.
+func TestRegistryChildEnvStripsRegistryVariables(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/local/bin",
+		"REGISTRY_CONFIG=/etc/distribution/config.yml",
+		"REGISTRY_URL=http://127.0.0.1:5000",
+		"REGISTRY_DATA_DIR=/data/registry",
+		"REGISTRY_USERNAME=admin",
+		"DATA_DIR=/data",
+		"HOME=/home/registry-ui",
+	}
+	got := registryChildEnv(parent)
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "REGISTRY_") {
+			t.Errorf("registryChildEnv kept %q, want it stripped", kv)
+		}
+	}
+	want := []string{"PATH=/usr/local/bin", "DATA_DIR=/data", "HOME=/home/registry-ui"}
+	if len(got) != len(want) {
+		t.Fatalf("registryChildEnv => %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("registryChildEnv[%d] => %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestRegistryChildEnvEmpty(t *testing.T) {
+	if got := registryChildEnv(nil); len(got) != 0 {
+		t.Errorf("registryChildEnv(nil) => %v, want empty", got)
+	}
+}
+
 func TestGCRequestAll(t *testing.T) {
 	if !gcRequestAll(httptest.NewRequest(http.MethodPost, "/api/gc/run?all=true", nil)) {
 		t.Error("?all=true should request a full purge")

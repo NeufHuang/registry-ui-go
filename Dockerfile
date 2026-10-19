@@ -20,15 +20,18 @@ COPY --chown=registry-ui:registry-ui deploy/aio/registry-config.yml /etc/distrib
 COPY deploy/aio/entrypoint.sh /usr/local/bin/registry-ui-entrypoint
 RUN chmod 755 /usr/local/bin/registry-ui-entrypoint
 EXPOSE 8080 5000
+# REGISTRY_URL, REGISTRY_DATA_DIR and REGISTRY_CONFIG are deliberately NOT set
+# here. distribution/registry maps any REGISTRY_-prefixed variable onto its own
+# config tree (REGISTRY_DATA_DIR becomes storage.data.dir), so an image-wide ENV
+# would leak into `registry serve` and `registry garbage-collect` and point GC
+# at the wrong storage root. The entrypoint supplies these defaults to the UI
+# process only.
 ENV SERVER_ADDR=:8080 \
-    REGISTRY_URL=http://127.0.0.1:5000 \
     DATA_DIR=/data \
     SQLITE_PATH=/data/db/registry-ui.db \
     UPLOAD_DIR=/data/uploads \
     CERT_DIR=/data/certs \
-    REGISTRY_DATA_DIR=/data/registry \
     ENABLE_DELETE=true \
-    REGISTRY_CONFIG=/etc/distribution/config.yml \
     DEPLOY_MODE=aio
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/registry-ui-entrypoint"]

@@ -41,3 +41,6 @@ Dockerfile.runtime
 docker-compose.dual.yml
 docker-compose.runtime-dual.yml
 AGENTS.md
+
+# Go module cache for sandboxed/local release checks
+.gomodcache/

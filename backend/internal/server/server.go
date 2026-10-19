@@ -1681,6 +1681,10 @@ func (s *Server) runBlobGC(ctx context.Context) (int, int64, error) {
 	}
 	before := dirSizeBytes(s.cfg.RegistryDataDir)
 	cmd := exec.CommandContext(ctx, "registry", "garbage-collect", configPath)
+	// The registry binary maps every REGISTRY_-prefixed variable onto its own
+	// config tree (REGISTRY_DATA_DIR becomes storage.data.dir), so inheriting
+	// our environment would make GC scan the wrong root. Give it a clean one.
+	cmd.Env = registryChildEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, 0, fmt.Errorf("registry garbage-collect failed: %w (output: %s)", err, truncateOutput(string(out)))
@@ -1693,6 +1697,21 @@ func (s *Server) runBlobGC(ctx context.Context) (int, int64, error) {
 	}
 	s.cleanupEmptyRepoDirs()
 	return deleted, freed, nil
+}
+
+// registryChildEnv returns parent with every REGISTRY_-prefixed variable
+// removed, for passing to the distribution registry binary. That binary treats
+// such variables as overrides for its config file, so leaking ours would point
+// it at the wrong storage root and break garbage collection.
+func registryChildEnv(parent []string) []string {
+	out := make([]string, 0, len(parent))
+	for _, kv := range parent {
+		if strings.HasPrefix(kv, "REGISTRY_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // registryRootDirectory extracts storage.filesystem.rootdirectory from a
