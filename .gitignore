@@ -44,3 +44,13 @@ AGENTS.md
 
 # Go module cache for sandboxed/local release checks
 .gomodcache/
+.gotmp/
+
+# Local release builds and packaged artifacts (not source)
+release-artifacts/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.sha256
+SHA256SUMS
