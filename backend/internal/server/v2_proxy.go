@@ -195,7 +195,10 @@ func (s *Server) newV2Proxy() http.Handler {
 							// Fetch manifest to compute size for database stats
 							var size int64
 							if m, merr := s.client.Manifest(bgCtx, repoPath, digest); merr == nil {
-								size = computeManifestSize(m.Manifest)
+								// Resolve the image size rather than the manifest
+								// document size: a pushed multi-arch index would
+								// otherwise record a few hundred bytes.
+								size = imageSize(bgCtx, s.client, repoPath, m.Manifest)
 							}
 							_, _ = s.store.SyncImage(bgCtx, store.Image{
 								RepositoryID: rid,

@@ -27,7 +27,7 @@
 2. 两个 Cookie 的 `Secure` 标志**按协议自适应**：仅在 HTTPS（直连 TLS 或反代设置 `X-Forwarded-Proto: https`）时设置 `Secure`，因此默认 HTTP 部署也能登录。**生产环境务必启用 HTTPS。**
 3. 会话存储在服务进程内存中（单实例设计，重启即登出，不支持多副本水平扩展），7 天过期并有后台清理。
 4. 后续请求自动携带会话 Cookie。
-5. **首次启动的默认管理员 `admin/change-me` 被标记 `mustChangePassword`，在修改密码前调用除 `/api/user`、`/api/me`、`/api/user/password`、`/api/logout` 外的接口会返回 `403`。**
+5. **首次启动且数据库中没有启用的管理员时，服务会为管理员 `admin` 生成一个 16 位随机初始密码，只在创建账号的那次启动日志里打印一次（`DEFAULT ADMIN PASSWORD: ...`），重启不会重复打印。默认不强制修改密码：`mustChangePassword` 为 `false`，不会拦截 `/api/*` 与 `/v2/*`；需要改密码时用 `POST /api/user/password` 或界面「个人信息」。服务端仍保留 `mustChangePassword=1` 时返回 `403 password_change_required` 的拦截逻辑，仅作为该标记被手工置位时的兜底。**
 
 ### 1.2 CSRF 防护
 
@@ -37,8 +37,9 @@
 X-CSRF-Token: <csrf_token cookie 的值>
 ```
 
-例外（无需 CSRF）：`/api/login`、`/v2/*`，以及携带 `Authorization: Bearer <token>` 的请求
-（Bearer Token 不是浏览器自动携带的凭证，跨站请求无法附加该头，因此不存在 CSRF 风险）。
+例外（无需 CSRF）：`/api/login`、`/v2/*`，携带 `Authorization: Bearer <token>` 的请求
+（Bearer Token 不是浏览器自动携带的凭证，跨站请求无法附加该头，因此不存在 CSRF 风险），
+以及 `AUTH_MODE=off`（此时没有会话凭证可被跨站利用，服务也不会下发 `csrf_token`）。
 
 校验失败返回 `403`：
 
@@ -116,13 +117,13 @@ Authorization: Bearer ru_<prefix>_<hex>
 请求体：
 
 ```json
-{ "username": "admin", "password": "change-me" }
+{ "username": "admin", "password": "<initial admin password from the startup log>" }
 ```
 
 响应 `200`：
 
 ```json
-{ "username": "admin", "isAdmin": true, "mustChangePassword": true }
+{ "username": "admin", "isAdmin": true, "mustChangePassword": false }
 ```
 
 失败返回 `401 {"error":"invalid credentials"}`。
@@ -136,7 +137,7 @@ Authorization: Bearer ru_<prefix>_<hex>
 返回当前登录用户的完整信息（权限：登录）。
 
 ```json
-{ "id": 6, "username": "admin", "isAdmin": true, "enabled": true, "mustChangePassword": true }
+{ "id": 6, "username": "admin", "isAdmin": true, "enabled": true, "mustChangePassword": false }
 ```
 
 ### GET /api/my-permissions
@@ -162,7 +163,7 @@ Authorization: Bearer ru_<prefix>_<hex>
   "avatar": "/uploads/avatar-default-xxxx.svg",
   "authMode": "basic",
   "isAdmin": true,
-  "mustChangePassword": true
+  "mustChangePassword": false
 }
 ```
 
@@ -180,7 +181,7 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 - 新密码至少 6 位，否则 `400`。
 - 旧密码错误返回 `403`。
-- 成功后清除 `mustChangePassword` 标记。
+- 成功后清除该账号的 `mustChangePassword` 标记（默认管理员本来就不置位）。
 
 ---
 
@@ -217,6 +218,8 @@ Authorization: Bearer ru_<prefix>_<hex>
 ### GET /api/repositories/{repo}/manifests/{ref}
 
 获取 manifest 详情（`ref` 可为 tag 或 digest），含 config、artifactType 等解析信息。
+
+响应中的 `size` 是该 manifest 指向的镜像实际大小：config 与所有 layer 之和，按 digest 去重；OCI index / Docker manifest list 会展开子 manifest（最多 16 个、两层），因此多架构 tag 得到的是各平台镜像的合计大小，而不是子 manifest 描述符的几百字节。
 
 ### HEAD /api/repositories/{repo}/manifests/{ref}
 
@@ -255,7 +258,9 @@ Authorization: Bearer ru_<prefix>_<hex>
 
 ### GET /api/repositories/{repo}/stats
 
-返回该仓库的拉取/推送统计。
+返回该仓库的 tag 数、镜像大小与当前 Tag 策略（`tagCount`、`totalSize`、`pendingGCCount`、`pendingGCSize`、`protectionMode`、`overwriteAction`、`keepCount`、`anonymousPull`、`pushCreateRepo`）。
+
+`tagCount` 是 tag 数；`totalSize` 按 digest 去重后求和，多个 tag 指向同一 digest 时该镜像只计一次。全局拉取/推送统计见 `GET /api/repo-stats`。
 
 ### GET|PUT /api/repositories/{repo}/tag-policy
 
@@ -264,6 +269,8 @@ Authorization: Bearer ru_<prefix>_<hex>
 ### GET /api/repositories/{repo}/retention-preview
 
 预览基于保留**镜像**数量的清理候选。`keepCount` 按 digest 分组计数（同 digest 的多标签计为 1 个镜像），保留最近 N 个镜像，清理更旧的镜像的全部标签。
+
+该端点只作用于单个仓库（后端没有命名空间级的清理端点）。Web UI 在树上勾选命名空间（等于勾选该命名空间下所有仓库）后打开 Tag 策略页时，会对批次里的每个仓库分别调用本端点并按仓库合并预览结果，确认后再逐个仓库调用 `retention-run`。
 
 响应：
 
@@ -579,7 +586,8 @@ Webhook 在发生 `push` / `delete` / `restore` 事件时，异步向配置的 U
 
 ## 12. 管理 - 不可变 Tag 规则
 
-仅**管理员**可访问。
+仅**管理员**可访问。与其它全局设置（`/api/settings`、`/api/gc/run`）一致，
+`AUTH_MODE=off` 时没有登录用户，接口保持开放；已登录的非管理员一律 `403`。
 
 ### GET /api/admin/immutable-rules
 

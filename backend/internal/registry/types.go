@@ -20,6 +20,11 @@ type ManifestResponse struct {
 	ArtifactType string       `json:"artifactType,omitempty"`
 	Config       *ImageConfig `json:"config,omitempty"`
 	SharedTags   []string     `json:"sharedTags,omitempty"`
+	// Size is the resolved byte size of the image this manifest points at
+	// (config plus layer blobs, index children resolved and shared blobs
+	// counted once). It is filled in by the UI server, not by the registry
+	// client, so the detail panel and the statistics agree.
+	Size int64 `json:"size,omitempty"`
 }
 
 type ImageConfig struct {

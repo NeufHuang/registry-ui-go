@@ -384,8 +384,10 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 }
 
 // mustChangePasswordExempt lists the only endpoints a user with a pending
-// forced password change may call. Everything else returns 403 until the
-// password is rotated, as promised by docs/API.md section 5.
+// forced password change may call. Everything else under /api/ and /v2/
+// returns 403 until the password is rotated. The flag is no longer set by
+// the default-admin seed (rotation is not forced), so this list only matters
+// when a row is set explicitly.
 func mustChangePasswordExempt(path string) bool {
 	switch path {
 	case "/api/login", "/api/logout", "/api/user", "/api/me", "/api/user/password":
@@ -394,14 +396,31 @@ func mustChangePasswordExempt(path string) bool {
 	return false
 }
 
-// enforcePasswordChange rejects requests from a user whose default password
-// has not been rotated. Returns false (and writes the response) when blocked.
+// isEndpointPath reports whether path is served by an API/registry handler
+// rather than by the embedded UI (pages, deep links and static assets).
+func isEndpointPath(path string) bool {
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/v2/")
+}
+
+// enforcePasswordChange rejects requests from a user whose password still
+// carries the must-change flag. Returns false (and writes the response) when
+// blocked.
+//
+// Only endpoints are gated. The UI shell and its assets must stay reachable:
+// the change-password form lives inside the shell, so answering the browser's
+// post-login redirect to "/" with this JSON body left a fresh deployment
+// showing {"error":"password_change_required"} with no way to rotate the
+// password. The forced change is still enforced client-side (the profile
+// modal cannot be dismissed) and server-side for every /api/ and /v2/ call.
+//
+// Since the default admin is seeded with the flag cleared, this gate normally
+// stays dormant; it remains as a safety net for explicitly flagged rows.
 func (s *Server) enforcePasswordChange(w http.ResponseWriter, r *http.Request) bool {
 	u := s.GetCurrentUser(r)
 	if u == nil || !u.MustChangePassword {
 		return true
 	}
-	if mustChangePasswordExempt(r.URL.Path) {
+	if mustChangePasswordExempt(r.URL.Path) || !isEndpointPath(r.URL.Path) {
 		return true
 	}
 	writeJSON(w, http.StatusForbidden, map[string]any{
@@ -573,6 +592,16 @@ func (s *Server) requireCSRF(next http.Handler) http.Handler {
 		// this exemption the documented "use a Bearer token to call any API"
 		// was impossible for POST/PUT/DELETE.
 		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// With AUTH_MODE=off there is no authenticated identity to ride: the
+		// UI is anonymous, so a forged cross-site request carries exactly the
+		// authority of a direct one and CSRF protects nothing. Worse, no
+		// csrf_token cookie is ever issued in that mode (createSession, which
+		// runs on login only, is the sole issuer), so enforcing CSRF rejected
+		// every save from the browser with "CSRF token validation failed".
+		if !s.authEnabled() {
 			next.ServeHTTP(w, r)
 			return
 		}

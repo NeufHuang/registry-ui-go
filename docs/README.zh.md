@@ -69,7 +69,31 @@ docker compose up -d --build
 
 访问：http://localhost:8080
 
-默认账号：`admin` / `change-me`（首次登录必须修改密码）
+默认账号：`admin`。首次启动（数据库里还没有管理员账号）时会随机生成一个密码，只在容器日志里打印一次，用下面的命令查看：
+
+```bash
+docker compose logs registry-ui | grep "DEFAULT ADMIN PASSWORD"
+```
+
+All-in-One 部署把服务名换成 `registry-ui-aio`：
+
+```bash
+docker compose -f docker-compose.aio.yml logs registry-ui-aio | grep "DEFAULT ADMIN PASSWORD"
+```
+
+用 `docker run` 启动时换成容器名：`docker logs <容器名> | grep "DEFAULT ADMIN PASSWORD"`。
+
+默认**不强制**修改密码，登录后可在「个人信息」里随时修改。这行密码只在首次初始化时打印，
+重启不会重复，请第一时间保存。如果日志已被轮转、密码丢失，可以停止服务、删除种子账号再启动，
+下次启动会重新生成并打印新密码（前提是数据库里没有其他启用的管理员；该账号的 API Token
+与命名空间授权会一并删除）：
+
+```bash
+docker compose stop registry-ui
+sqlite3 data/db/registry-ui.db "PRAGMA foreign_keys=ON; DELETE FROM users WHERE username='admin';"
+docker compose start registry-ui
+docker compose logs registry-ui | grep "DEFAULT ADMIN PASSWORD"
+```
 
 ### All-in-One 单容器
 
@@ -118,6 +142,10 @@ go run ./backend/cmd/registry-ui
 | `ALLOW_WEBHOOK_PRIVATE_IP` | `false` | 允许 Webhook 指向内网 IP |
 | `DATA_DIR` | `./data` | 持久化数据根目录 |
 
+`AUTH_MODE=off` 时没有登录用户：设置弹窗里的**仓库设置**（全局默认保护模式、覆盖动作、
+保留数、匿名拉取、推送自动建仓、回收站 GC、不可变 Tag 规则、手动 GC）仍可修改；
+用户管理、API Token、Webhook 会隐藏（这些接口需要 basic 认证）。
+
 ### 数据目录结构
 
 ```
@@ -142,7 +170,7 @@ docker push localhost:8080/library/nginx:latest
 
 ```bash
 # 登录（与 docker login 共用账号）
-helm registry login localhost:8080 --username admin --password change-me --insecure
+helm registry login localhost:8080 --username admin --password "<初始管理员密码>" --insecure
 
 # 打包并推送
 helm create mychart

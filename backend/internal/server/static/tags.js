@@ -138,7 +138,11 @@ function renderManifestFields(data) {
 
 function renderSummary(data) {
   const m = data.manifest || {}; const layers = Array.isArray(m.layers) ? m.layers : []; const manifests = Array.isArray(m.manifests) ? m.manifests : [];
-  const size = layers.reduce((s,l)=>s+Number(l.size||0),0) || manifests.reduce((s,x)=>s+Number(x.size||0),0);
+  // The server resolves the image size (config + layers, index children
+  // expanded, shared blobs counted once). The local fallbacks stay for older
+  // responses, but summing child descriptor sizes on an index would report the
+  // manifest documents' size (~hundreds of bytes) as if it were the image.
+  const size = Number(data.size || 0) || layers.reduce((s,l)=>s+Number(l.size||0),0) || manifests.reduce((s,x)=>s+Number(x.size||0),0);
   const shared = Array.isArray(data.sharedTags) && data.sharedTags.length > 0 ? data.sharedTags.join(', ') : '';
   const rows = [
     fieldRow(t('pull'), pullCommand() || '-', 'pull'),

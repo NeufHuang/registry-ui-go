@@ -72,50 +72,118 @@ func New(cfg config.Config, st *store.Store) *Server {
 // re-execs the binary when this fires.
 func (s *Server) RestartRequested() <-chan struct{} { return s.restartCh }
 
-func computeManifestSize(manifest any) int64 {
-	var total int64
-	m, ok := manifest.(map[string]any)
-	if !ok {
-		return total
-	}
-	parseSize := func(v any) int64 {
-		switch s := v.(type) {
-		case float64:
-			// JSON numbers are float64; values above 2^53 lose integer
-			// precision. Clamp to MaxInt64 rather than silently wrapping
-			// to a negative number. NaN and Inf are not valid sizes.
-			if math.IsNaN(s) || math.IsInf(s, 0) {
-				return 0
-			}
-			if s > float64(math.MaxInt64) {
-				return math.MaxInt64
-			}
-			if s < 0 {
-				return 0
-			}
-			return int64(s)
-		case json.Number:
-			if n, err := s.Int64(); err == nil {
-				return n
-			}
+// parseSizeValue converts a manifest/blob descriptor "size" field to bytes.
+// JSON numbers decode as float64 unless the decoder used json.Number, so both
+// are accepted; values above 2^53 lose integer precision and are clamped to
+// MaxInt64 rather than wrapping negative, and NaN/Inf/negative are not sizes.
+func parseSizeValue(v any) int64 {
+	switch s := v.(type) {
+	case float64:
+		if math.IsNaN(s) || math.IsInf(s, 0) {
+			return 0
 		}
+		if s > float64(math.MaxInt64) {
+			return math.MaxInt64
+		}
+		if s < 0 {
+			return 0
+		}
+		return int64(s)
+	case json.Number:
+		if n, err := s.Int64(); err == nil {
+			if n < 0 {
+				return 0
+			}
+			return n
+		}
+		if f, err := s.Float64(); err == nil {
+			return parseSizeValue(f)
+		}
+	}
+	return 0
+}
+
+// maxIndexSizeChildren bounds how many child manifests are resolved for one
+// OCI index / Docker manifest list. Real indexes carry one entry per platform,
+// far below this; the bound only protects against pathological documents.
+const maxIndexSizeChildren = 16
+
+// maxIndexSizeDepth bounds index-of-index recursion (an index of indexes is
+// already unusual; deeper nesting reports the sizes it could resolve).
+const maxIndexSizeDepth = 2
+
+// imageSize returns the byte size of the image a manifest points at: the sum of
+// its config and layer blobs, each blob counted once by digest. An OCI index or
+// Docker manifest list is resolved through its children (bounded by
+// maxIndexSizeChildren / maxIndexSizeDepth) so multi-arch tags report the
+// images they reference instead of the few hundred bytes of their child
+// descriptors — the bug behind repositories with 100+ tags totalling "37 KB".
+func imageSize(ctx context.Context, client *registry.Client, name string, manifest any) int64 {
+	return imageSizeInto(ctx, client, name, manifest, map[string]struct{}{}, map[string]struct{}{}, 0)
+}
+
+func imageSizeInto(ctx context.Context, client *registry.Client, name string, manifest any, seenBlobs, seenManifests map[string]struct{}, depth int) int64 {
+	m, ok := manifest.(map[string]any)
+	if !ok || client == nil || depth > maxIndexSizeDepth {
 		return 0
 	}
-	if layers, ok := m["layers"].([]any); ok {
-		for _, layer := range layers {
-			if l, ok := layer.(map[string]any); ok {
-				total += parseSize(l["size"])
+	if children, ok := m["manifests"].([]any); ok && len(children) > 0 {
+		var total int64
+		resolved := 0
+		for _, raw := range children {
+			if resolved >= maxIndexSizeChildren {
+				break
 			}
+			child, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			digest, _ := child["digest"].(string)
+			if digest == "" {
+				continue
+			}
+			if _, dup := seenManifests[digest]; dup {
+				continue
+			}
+			seenManifests[digest] = struct{}{}
+			resolved++
+			childManifest, err := client.Manifest(ctx, name, digest)
+			if err != nil {
+				continue
+			}
+			total += imageSizeInto(ctx, client, name, childManifest.Manifest, seenBlobs, seenManifests, depth+1)
 		}
+		return total
 	}
-	if manifests, ok := m["manifests"].([]any); ok {
-		for _, x := range manifests {
-			if mf, ok := x.(map[string]any); ok {
-				total += parseSize(mf["size"])
+	var total int64
+	if config, ok := m["config"].(map[string]any); ok {
+		total += uniqueBlobSize(config, seenBlobs)
+	}
+	if layers, ok := m["layers"].([]any); ok {
+		for _, raw := range layers {
+			if layer, ok := raw.(map[string]any); ok {
+				total += uniqueBlobSize(layer, seenBlobs)
 			}
 		}
 	}
 	return total
+}
+
+// uniqueBlobSize adds one blob descriptor's size to the total unless the blob
+// was already counted, so layers shared between platforms (or between tags in
+// one index) contribute once.
+func uniqueBlobSize(descriptor map[string]any, seen map[string]struct{}) int64 {
+	size := parseSizeValue(descriptor["size"])
+	if size <= 0 {
+		return 0
+	}
+	if digest, _ := descriptor["digest"].(string); digest != "" {
+		if _, dup := seen[digest]; dup {
+			return 0
+		}
+		seen[digest] = struct{}{}
+	}
+	return size
 }
 
 func (s *Server) Handler() http.Handler {
@@ -485,10 +553,22 @@ func (s *Server) handleRepositorySubroutes(w http.ResponseWriter, r *http.Reques
 			d, _, _ := client.Digest(r.Context(), name, ref)
 			digest = d
 		}
+		// The size of the image this manifest points at (index children
+		// resolved) is computed once: it is stored for the statistics and
+		// returned so the detail panel shows the same number instead of
+		// re-deriving a misleading one from the raw document.
+		out.Size = imageSize(r.Context(), client, name, out.Manifest)
 		if digest != "" {
 			rid, _ := s.resolveRepo(r.Context(), name)
 			if rid > 0 {
-				_, _ = s.store.SyncImage(r.Context(), store.Image{RepositoryID: rid, Tag: ref, Digest: digest, ContentType: out.ContentType, Size: computeManifestSize(out.Manifest), ArtifactType: detectArtifactType(out.ContentType, out.Manifest)})
+				if out.Size == 0 {
+					// An unresolvable index (children unreachable) keeps the
+					// last good size rather than reporting 0.
+					if img, ierr := s.store.GetImageByRepoTag(r.Context(), rid, ref); ierr == nil {
+						out.Size = img.Size
+					}
+				}
+				_, _ = s.store.SyncImage(r.Context(), store.Image{RepositoryID: rid, Tag: ref, Digest: digest, ContentType: out.ContentType, Size: out.Size, ArtifactType: detectArtifactType(out.ContentType, out.Manifest)})
 				shared, _ := s.store.ListTagsByDigest(r.Context(), rid, digest, ref)
 				out.SharedTags = shared
 			}
@@ -586,12 +666,20 @@ func (s *Server) syncTagsAsync(name string, tags []string) {
 		if err != nil || rid == 0 {
 			return
 		}
+		// Tags that share a digest share an image, so the (potentially
+		// multi-request) size resolution runs once per digest.
+		sizes := make(map[string]int64, len(tags))
 		for _, tag := range tags {
 			m, err := s.client.Manifest(ctx, name, tag)
 			if err != nil {
 				continue
 			}
-			_, _ = s.store.SyncImage(ctx, store.Image{RepositoryID: rid, Tag: tag, Digest: m.Digest, Size: computeManifestSize(m.Manifest)})
+			size, ok := sizes[m.Digest]
+			if !ok {
+				size = imageSize(ctx, s.client, name, m.Manifest)
+				sizes[m.Digest] = size
+			}
+			_, _ = s.store.SyncImage(ctx, store.Image{RepositoryID: rid, Tag: tag, Digest: m.Digest, Size: size})
 		}
 	}()
 }
@@ -618,6 +706,7 @@ func (s *Server) SyncAll(ctx context.Context) error {
 				log.Printf("startup sync: tags failed for %s: %v", name, err)
 				continue
 			}
+			sizes := make(map[string]int64, len(tags.Tags))
 			for _, tag := range tags.Tags {
 				m, err := client.Manifest(ctx, name, tag)
 				if err != nil {
@@ -629,7 +718,12 @@ func (s *Server) SyncAll(ctx context.Context) error {
 					log.Printf("startup sync: resolveRepo failed for %s: %v", name, rerr)
 					continue
 				}
-				if _, err := s.store.SyncImage(ctx, store.Image{RepositoryID: rid, Tag: tag, Digest: m.Digest, Size: computeManifestSize(m.Manifest)}); err != nil {
+				size, ok := sizes[m.Digest]
+				if !ok {
+					size = imageSize(ctx, client, name, m.Manifest)
+					sizes[m.Digest] = size
+				}
+				if _, err := s.store.SyncImage(ctx, store.Image{RepositoryID: rid, Tag: tag, Digest: m.Digest, Size: size}); err != nil {
 					log.Printf("startup sync: SyncImage failed for %s:%s: %v", name, tag, err)
 					continue
 				}

@@ -70,7 +70,34 @@ docker compose up -d --build
 
 Access: http://localhost:8080
 
-Default credentials: `admin` / `change-me` (must change password on first login)
+Default account: `admin`. On the first start (when the database has no admin account) a
+random password is generated and printed once in the container log. Read it with:
+
+```bash
+docker compose logs registry-ui | grep "DEFAULT ADMIN PASSWORD"
+```
+
+For the all-in-one deployment use `registry-ui-aio` as the service name:
+
+```bash
+docker compose -f docker-compose.aio.yml logs registry-ui-aio | grep "DEFAULT ADMIN PASSWORD"
+```
+
+With `docker run`, use the container name instead: `docker logs <container> | grep "DEFAULT ADMIN PASSWORD"`.
+
+Password rotation is **not** forced: change it from **Profile** in the UI whenever you like.
+The password line is printed only during that initial setup and is not repeated on restarts,
+so save it right away. If it is already gone (rotated container logs), stop the service,
+delete the seeded account and start it again — the next start re-seeds `admin` (as long as no
+other enabled admin exists) and prints a fresh password (that account's API tokens and
+namespace permissions are deleted with it):
+
+```bash
+docker compose stop registry-ui
+sqlite3 data/db/registry-ui.db "PRAGMA foreign_keys=ON; DELETE FROM users WHERE username='admin';"
+docker compose start registry-ui
+docker compose logs registry-ui | grep "DEFAULT ADMIN PASSWORD"
+```
 
 ### All-in-One
 
@@ -119,6 +146,11 @@ All configuration via environment variables:
 | `ALLOW_WEBHOOK_PRIVATE_IP` | `false` | Allow webhooks to private IPs |
 | `DATA_DIR` | `./data` | Persistent data root directory |
 
+With `AUTH_MODE=off` there is no signed-in user: the settings dialog's **Repo Settings** tab
+(global protection mode, overwrite action, retention, anonymous pull, push-create-repo,
+recycle-bin GC, immutable-tag rules, manual GC) stays editable, while user management,
+API tokens and webhooks are hidden because those endpoints require basic auth.
+
 ### Data Directory Layout
 
 ```
@@ -143,7 +175,7 @@ docker push localhost:8080/library/nginx:latest
 
 ```bash
 # Login (same credentials as docker login)
-helm registry login localhost:8080 --username admin --password change-me --insecure
+helm registry login localhost:8080 --username admin --password "<initial admin password>" --insecure
 
 # Package and push
 helm create mychart

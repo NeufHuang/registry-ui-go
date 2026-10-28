@@ -5,20 +5,40 @@
 // a client-side loop of PUTs — the same pattern the batch delete already uses.
 const tagPolicyScope = {repos: [], label: ''};
 
-// Open the dialog for the given repositories. A single repo keeps the original
-// behaviour (its own stats shown, one PUT). Multiple repos show the first
-// repo's stats as a starting point and PUT the same values to each.
+// Open the dialog for the given repositories. A single repo shows its own
+// stats and takes one PUT. Multiple repos sum the statistics over the batch,
+// seed the fields from the first repo, and PUT the same values to each.
 async function openTagPolicyDialog(repos) {
   if (!repos.length) { toast(t('noRepoSelected'), true); return; }
   tagPolicyScope.repos = repos;
   const ns = namespaceOf(repos[0]);
-  tagPolicyScope.label = repos.length === 1 ? repos[0] : `${namespaceLabel(ns)} (${repos.length} 个仓库)`;
+  tagPolicyScope.label = repos.length === 1 ? repos[0] : `${namespaceLabel(ns)} (${repos.length} ${t('repositories')})`;
   el('tagSettingsRepoName').textContent = tagPolicyScope.label;
   try {
-    const {data} = await api(`/api/repositories/${encodeRepo(repos[0])}/stats`);
-    el('tagStatsTagCount').textContent = data.tagCount ?? '-';
-    el('tagStatsSize').textContent = data.totalSize ? fmtBytes(data.totalSize) : '-';
-    el('tagStatsPendingGC').textContent = (data.pendingGCCount || 0) + ' · ' + fmtBytes(data.pendingGCSize || 0);
+    // A namespace row selects every repository of that namespace, so the
+    // statistics are summed over the whole batch instead of being taken from
+    // whichever repository happens to be first. The policy fields are seeded
+    // from the first repository, which is what the save below then applies to
+    // all of them.
+    let tagCount = 0, totalSize = 0, pendingGCCount = 0, pendingGCSize = 0;
+    let data = null;
+    for (const repo of repos) {
+      let stats;
+      try {
+        ({data: stats} = await api(`/api/repositories/${encodeRepo(repo)}/stats`));
+      } catch(e) {
+        continue;
+      }
+      if (!data) data = stats;
+      tagCount += Number(stats.tagCount || 0);
+      totalSize += Number(stats.totalSize || 0);
+      pendingGCCount += Number(stats.pendingGCCount || 0);
+      pendingGCSize += Number(stats.pendingGCSize || 0);
+    }
+    if (!data) { toast(t('noRepoSelected'), true); return; }
+    el('tagStatsTagCount').textContent = tagCount;
+    el('tagStatsSize').textContent = totalSize ? fmtBytes(totalSize) : '-';
+    el('tagStatsPendingGC').textContent = pendingGCCount + ' · ' + fmtBytes(pendingGCSize);
     const mode = data.protectionMode || 'rules';
     const modeRadio = document.querySelector('input[name="protectionMode"][value="' + mode + '"]');
     if (modeRadio) modeRadio.checked = true;
@@ -87,29 +107,51 @@ el('tagSettingsSaveBtn').onclick = async (e) => {
     if (state.selectedRepo) await checkRepoProtection(state.selectedRepo);
   } catch(e) { toast(e.message, true); }
 };
+// Previewing (and running) the retention cleanup walks every repository the
+// dialog covers, not just state.selectedRepo: checking a namespace row selects
+// its repositories by checkbox, so state.selectedRepo is empty or only one of
+// them and the old single-repo preview could not show the batch. The backend
+// has no namespace-scoped retention endpoint, so this is a client-side loop,
+// the same pattern the batch save above uses.
 el('retentionPreviewBtn').onclick = async () => {
   const keepCount = parseInt(el('tagSettingKeepCount').value) || 0;
   if (keepCount <= 0) { toast(t('retentionKeepCountHelp'), true); return; }
-  const repo = state.selectedRepo;
-  if (!repo) return;
+  const repos = tagPolicyScope.repos.length ? tagPolicyScope.repos.slice() : (state.selectedRepo ? [state.selectedRepo] : []);
+  if (!repos.length) { toast(t('noRepoSelected'), true); return; }
   try {
-    const {data} = await api(`/api/repositories/${encodeRepo(repo)}/retention-preview?keepCount=${keepCount}`);
-    if (!data.candidates || data.candidates.length === 0) { toast(t('retentionNoCandidates')); return; }
-    const list = data.candidates.map(c => {
-      const tagList = (c.tags || []).join(', ');
-      return `• ${c.digest.slice(0,19)}...  (${c.tags ? c.tags.length : 0} tags: ${tagList})`;
+    const candidates = [];
+    for (const repo of repos) {
+      const {data} = await api(`/api/repositories/${encodeRepo(repo)}/retention-preview?keepCount=${keepCount}`);
+      for (const c of (data.candidates || [])) candidates.push({repo, digest: c.digest, tags: c.tags || []});
+    }
+    if (candidates.length === 0) { toast(t('retentionNoCandidates')); return; }
+    const showRepo = repos.length > 1;
+    const list = candidates.map(c => {
+      const tagList = c.tags.join(', ');
+      const prefix = showRepo ? `${c.repo}: ` : '';
+      return `• ${prefix}${c.digest.slice(0,19)}...  (${c.tags.length} tags: ${tagList})`;
     }).join('\n');
     const ok = await openDeleteConfirm({
       title: t('retentionPreview'),
       message: t('retentionConfirm'),
-      details: list + `\n\n${data.candidates.length} images`,
+      details: list + `\n\n${candidates.length} images · ${repos.length} ${t('repositories')}`,
       expected: 'DELETE',
     });
     if (!ok) return;
-    const {data: result} = await api(`/api/repositories/${encodeRepo(repo)}/retention-run`, {method:'POST', body:JSON.stringify({keepCount})});
-    const success = (result.deleted || []).filter(r => r.ok).length;
-    const failed = (result.deleted || []).filter(r => !r.ok).length;
-    toast(t('retentionResult', {count: success}) + (failed > 0 ? `, ${failed} failed` : ''));
+    let success = 0, failed = 0, skipped = 0;
+    for (const repo of repos) {
+      // Deleting needs write access on the repository; skip the rest instead
+      // of aborting the batch halfway through.
+      if (!canWriteRepo(repo)) { skipped++; continue; }
+      const {data: result} = await api(`/api/repositories/${encodeRepo(repo)}/retention-run`, {method:'POST', body:JSON.stringify({keepCount})});
+      success += (result.deleted || []).filter(r => r.ok).length;
+      failed += (result.deleted || []).filter(r => !r.ok).length;
+    }
+    let summary = t('retentionResult', {count: success});
+    if (failed > 0) summary += `, ${failed} failed`;
+    if (skipped > 0) summary += `, ${skipped} ${t('noPermission')}`;
+    toast(summary);
+    if (state.selectedRepo && typeof refreshTreeTags === 'function') await refreshTreeTags();
     await loadRepos(true);
   } catch(e) { toast(e.message, true); }
 };

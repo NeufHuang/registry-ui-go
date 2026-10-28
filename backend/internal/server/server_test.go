@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/neuf/registry-ui/backend/internal/config"
+	"github.com/neuf/registry-ui/backend/internal/registry"
 	"github.com/neuf/registry-ui/backend/internal/store"
 )
 
@@ -158,6 +160,34 @@ func TestValidateCSRF(t *testing.T) {
 	r3.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "tok123"})
 	if validateCSRF(r3) {
 		t.Error("missing CSRF header should fail")
+	}
+}
+
+// TestRequireCSRFInAuthOffMode covers the save path of a deployment running
+// without authentication. No csrf_token cookie is ever issued in that mode
+// (only login sets one), so enforcing the double-submit check rejected every
+// settings save with "CSRF token validation failed". With no session there is
+// also nothing for CSRF to protect: the UI is anonymous either way.
+func TestRequireCSRFInAuthOffMode(t *testing.T) {
+	reached := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	off := &Server{cfg: config.Config{AuthMode: "off"}}
+	rr := httptest.NewRecorder()
+	off.requireCSRF(handler).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader("{}")))
+	if !reached || rr.Code != http.StatusOK {
+		t.Fatalf("AUTH_MODE=off POST without CSRF => %d reached=%v, want 200", rr.Code, reached)
+	}
+
+	// basic mode must still enforce the token.
+	basic := &Server{cfg: config.Config{AuthMode: "basic"}}
+	rr = httptest.NewRecorder()
+	basic.requireCSRF(handler).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader("{}")))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("AUTH_MODE=basic POST without CSRF => %d, want 403", rr.Code)
 	}
 }
 
@@ -802,18 +832,66 @@ func TestEnforcePasswordChange(t *testing.T) {
 			t.Errorf("%s should be exempt from forced password change", path)
 		}
 	}
-	rr := httptest.NewRecorder()
-	if srv.enforcePasswordChange(rr, withUser("/api/repositories", pending)) {
-		t.Error("other endpoints must be blocked until the password changes")
+	// The UI shell carries the change-password form, so pages, deep links and
+	// static assets must keep rendering. Gating "/" turned the post-login
+	// redirect into a bare password_change_required JSON page.
+	for _, path := range []string{"/", "/index.html", "/login.html", "/alpine", "/lib/nginx/tags/v1", "/uploads/logo.png", "/core.js"} {
+		if !srv.enforcePasswordChange(httptest.NewRecorder(), withUser(path, pending)) {
+			t.Errorf("%s is a page/asset and must stay reachable before the password changes", path)
+		}
 	}
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("blocked request => %d want 403", rr.Code)
+	for _, path := range []string{"/api/repositories", "/v2/lib/nginx/manifests/v1"} {
+		rr := httptest.NewRecorder()
+		if srv.enforcePasswordChange(rr, withUser(path, pending)) {
+			t.Errorf("%s is an endpoint and must be blocked until the password changes", path)
+		}
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("blocked request to %s => %d want 403", path, rr.Code)
+		}
+		if got := rr.Body.String(); !strings.Contains(got, "password_change_required") {
+			t.Errorf("blocked request to %s => body %q", path, got)
+		}
 	}
 	if !srv.enforcePasswordChange(httptest.NewRecorder(), withUser("/api/repositories", store.User{ID: 2})) {
 		t.Error("normal users must not be blocked")
 	}
 	if !srv.enforcePasswordChange(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/repositories", nil)) {
 		t.Error("anonymous/auth-disabled requests must not be blocked")
+	}
+}
+
+// TestImmutableRulesFollowGlobalSettingsAuth pins the authorization parity
+// between the immutable-tag rules and the other global settings. AUTH_MODE=off
+// has no user at all, so the rules must stay manageable there (the settings
+// tab that exposes them is only reachable in that mode); an authenticated
+// non-admin is still rejected.
+func TestImmutableRulesFollowGlobalSettingsAuth(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := New(config.Config{RegistryURL: "http://127.0.0.1:1", AuthMode: "off"}, st)
+
+	rr := httptest.NewRecorder()
+	srv.handleImmutableRules(rr, httptest.NewRequest(http.MethodGet, "/api/admin/immutable-rules", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("AUTH_MODE=off list rules => %d want 200: %s", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/immutable-rules", strings.NewReader(`{"pattern":"v*","description":"release"}`))
+	srv.handleImmutableRules(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("AUTH_MODE=off create rule => %d want 201: %s", rr.Code, rr.Body.String())
+	}
+
+	// An authenticated non-admin must not manage global rules.
+	nonAdmin := httptest.NewRequest(http.MethodGet, "/api/admin/immutable-rules", nil)
+	nonAdmin = nonAdmin.WithContext(context.WithValue(nonAdmin.Context(), ctxUserKey{}, store.User{ID: 2, Username: "bob"}))
+	rr = httptest.NewRecorder()
+	srv.handleImmutableRules(rr, nonAdmin)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("non-admin list rules => %d want 403", rr.Code)
 	}
 }
 
@@ -912,5 +990,106 @@ func TestProcessGCItemsDeletesUnreferencedDigest(t *testing.T) {
 	remaining, _ := st.ListAllPendingGC(ctx)
 	if len(remaining) != 0 {
 		t.Errorf("record should be removed, %d left", len(remaining))
+	}
+}
+
+// newManifestMockRegistry serves the manifest documents named in manifests,
+// keyed by the repository-relative reference (tag or digest). Requests for a
+// reference that is not present answer 404, which lets a test prove that a
+// failed child lookup is skipped rather than counted.
+func newManifestMockRegistry(repo string, manifests map[string]string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prefix := "/v2/" + repo + "/manifests/"
+		if !strings.HasPrefix(r.URL.Path, prefix) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		ref := strings.TrimPrefix(r.URL.Path, prefix)
+		body, ok := manifests[ref]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
+		w.Header().Set("Docker-Content-Digest", "sha256:"+strings.ReplaceAll(ref, "sha256:", ""))
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+// TestImageSizeResolvesIndexChildren covers the size statistics bug where a
+// multi-arch tag reported the few hundred bytes of its child manifest
+// descriptors instead of the images they point at (a repository with 100+ tags
+// totalled "37 KB").
+func TestImageSizeResolvesIndexChildren(t *testing.T) {
+	repo := "lib/app"
+	index := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+		{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:amd","size":370},
+		{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:arm","size":380}]}`
+	amd := `{"schemaVersion":2,"config":{"digest":"sha256:cfg1","size":1000},"layers":[
+		{"digest":"sha256:base","size":5000},
+		{"digest":"sha256:amd-only","size":2000}]}`
+	arm := `{"schemaVersion":2,"config":{"digest":"sha256:cfg2","size":1200},"layers":[
+		{"digest":"sha256:base","size":5000},
+		{"digest":"sha256:arm-only","size":3000}]}`
+	srv := newManifestMockRegistry(repo, map[string]string{
+		"latest": index, "sha256:amd": amd, "sha256:arm": arm,
+	})
+	defer srv.Close()
+	client := registry.NewClient(config.Config{RegistryURL: srv.URL})
+
+	var payload any
+	dec := json.NewDecoder(strings.NewReader(index))
+	dec.UseNumber()
+	if err := dec.Decode(&payload); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	// imageSize resolves the children and counts the shared base layer once;
+	// the index document's own child-descriptor bytes (370+380) are not the
+	// image size and must not be what gets reported.
+	if got, want := imageSize(context.Background(), client, repo, payload), int64(12200); got != want {
+		t.Errorf("imageSize(index) = %d, want %d", got, want)
+	}
+}
+
+// TestImageSizeSingleManifestDedupesSharedLayers covers a plain image manifest:
+// config plus layers, with a digest counted once even when repeated.
+func TestImageSizeSingleManifestDedupesSharedLayers(t *testing.T) {
+	repo := "lib/app"
+	doc := `{"schemaVersion":2,"config":{"digest":"sha256:cfg","size":1000},"layers":[
+		{"digest":"sha256:l1","size":5000},
+		{"digest":"sha256:l1","size":5000}]}`
+	srv := newManifestMockRegistry(repo, map[string]string{"latest": doc})
+	defer srv.Close()
+	client := registry.NewClient(config.Config{RegistryURL: srv.URL})
+
+	var payload any
+	dec := json.NewDecoder(strings.NewReader(doc))
+	dec.UseNumber()
+	if err := dec.Decode(&payload); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if got, want := imageSize(context.Background(), client, repo, payload), int64(6000); got != want {
+		t.Errorf("imageSize(single) = %d, want %d", got, want)
+	}
+}
+
+// TestImageSizeSkipsUnresolvableChildren proves an index whose children cannot
+// be fetched reports 0 instead of falling back to the child descriptor bytes
+// that caused the misleadingly small totals.
+func TestImageSizeSkipsUnresolvableChildren(t *testing.T) {
+	repo := "lib/app"
+	index := `{"schemaVersion":2,"manifests":[{"digest":"sha256:missing","size":370}]}`
+	srv := newManifestMockRegistry(repo, map[string]string{"latest": index})
+	defer srv.Close()
+	client := registry.NewClient(config.Config{RegistryURL: srv.URL})
+
+	var payload any
+	dec := json.NewDecoder(strings.NewReader(index))
+	dec.UseNumber()
+	if err := dec.Decode(&payload); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	if got := imageSize(context.Background(), client, repo, payload); got != 0 {
+		t.Errorf("imageSize(unresolvable index) = %d, want 0", got)
 	}
 }

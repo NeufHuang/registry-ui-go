@@ -25,9 +25,10 @@ import (
 // ---- Immutable Tag Rules ----
 
 func (s *Server) handleImmutableRules(w http.ResponseWriter, r *http.Request) {
-	u := s.GetCurrentUser(r)
-	if u == nil || !u.IsAdmin {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+	// requireAdmin keeps this consistent with the other global repo settings:
+	// in AUTH_MODE=off there is no user, so the surface stays open, while an
+	// authenticated non-admin is still rejected.
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	switch r.Method {
@@ -63,9 +64,7 @@ func (s *Server) handleImmutableRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImmutableRuleByID(w http.ResponseWriter, r *http.Request) {
-	u := s.GetCurrentUser(r)
-	if u == nil || !u.IsAdmin {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+	if !s.requireAdmin(w, r) {
 		return
 	}
 	idStr := strings.TrimPrefix(r.URL.Path, "/api/admin/immutable-rules/")
@@ -329,7 +328,8 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			size := computeManifestSize(m.Manifest)
+			// Export the resolved image size, matching /stats and the UI.
+			size := imageSize(r.Context(), client, repo, m.Manifest)
 			rows = append(rows, ExportRow{Repo: repo, Tag: tag, Digest: m.Digest, ContentType: m.ContentType, Size: size})
 		}
 	}

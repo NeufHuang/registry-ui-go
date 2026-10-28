@@ -108,8 +108,8 @@ type Store struct {
 
 // Default administrator seeded on first startup when the users table
 // contains no enabled admin. A random password is generated and logged
-// once; mustChangePassword=1 forces the operator to rotate it after
-// the first login.
+// once so the operator can log in; rotation is not forced (the operator
+// changes it from the UI when convenient).
 const (
 	DefaultAdminUsername = "admin"
 	// DefaultAdminPassword is kept only as a fallback for tests and
@@ -634,8 +634,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	// Seed the default admin account on first startup when the users
 	// table is empty of any enabled admin. A random password is generated
-	// and logged so the operator can log in; mustChangePassword=1 forces
-	// rotation after the first login. Subsequent restarts are no-ops.
+	// and logged so the operator can log in; rotation is not forced.
+	// Subsequent restarts are no-ops.
 	hasAdmin, herr := s.HasAdminUser(ctx)
 	if herr != nil {
 		log.Printf("migration: HasAdminUser check failed: %v", herr)
@@ -645,15 +645,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("hash default admin password: %w", err)
 		}
-		_, err = conn.ExecContext(ctx, `INSERT INTO users(username,password_hash,is_admin,enabled,password_must_change) VALUES(?,?,1,1,1) ON CONFLICT(username) DO NOTHING`, DefaultAdminUsername, hash)
+		_, err = conn.ExecContext(ctx, `INSERT INTO users(username,password_hash,is_admin,enabled,password_must_change) VALUES(?,?,1,1,0) ON CONFLICT(username) DO NOTHING`, DefaultAdminUsername, hash)
 		if err != nil {
 			return fmt.Errorf("seed default admin: %w", err)
 		}
 		log.Printf("============================================================")
 		log.Printf("  DEFAULT ADMIN PASSWORD: %s", password)
-		log.Printf("  You MUST change this password on first login.")
+		log.Printf("  Change it from the UI after logging in.")
 		log.Printf("============================================================")
-		log.Printf("migration: seeded default admin user %q with random password (must change on first login)", DefaultAdminUsername)
+		log.Printf("migration: seeded default admin user %q with random password", DefaultAdminUsername)
+	}
+	// Rotation is no longer forced. Older versions seeded the default admin
+	// with password_must_change=1, which locked every /api/ and /v2/ call
+	// behind 403 until the password was rotated. Clear any lingering flag so
+	// an upgraded install is not locked out; enforcePasswordChange remains as
+	// a safety net for rows that are set explicitly.
+	if _, err := conn.ExecContext(ctx, `UPDATE users SET password_must_change=0 WHERE password_must_change<>0`); err != nil {
+		return fmt.Errorf("clear password_must_change flags: %w", err)
 	}
 	// One-time cleanup of the legacy env-admin password hash that used
 	// to live in the settings table.
@@ -1227,8 +1235,12 @@ func (s *Store) UpsertImage(ctx context.Context, img Image) (Image, error) {
 	return img, err
 }
 
+// SyncImage inserts or refreshes the row a registry sync observed. A zero size
+// means the size could not be resolved (e.g. an index whose children were
+// unreachable), so an existing non-zero size is kept instead of being replaced
+// by 0 on a transient failure.
 func (s *Store) SyncImage(ctx context.Context, img Image) (Image, error) {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO images(repository_id,tag,digest,content_type,size,artifact_type,favorite,note,deleted,pushed_at) VALUES(?,?,?,?,?,?,0,'',0,?) ON CONFLICT(repository_id,tag) DO UPDATE SET digest=excluded.digest,content_type=excluded.content_type,size=excluded.size,artifact_type=excluded.artifact_type,deleted=0,pushed_at=excluded.pushed_at,updated_at=CURRENT_TIMESTAMP`, img.RepositoryID, img.Tag, img.Digest, img.ContentType, img.Size, img.ArtifactType, img.PushedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO images(repository_id,tag,digest,content_type,size,artifact_type,favorite,note,deleted,pushed_at) VALUES(?,?,?,?,?,?,0,'',0,?) ON CONFLICT(repository_id,tag) DO UPDATE SET digest=excluded.digest,content_type=excluded.content_type,size=CASE WHEN excluded.size > 0 THEN excluded.size ELSE images.size END,artifact_type=excluded.artifact_type,deleted=0,pushed_at=excluded.pushed_at,updated_at=CURRENT_TIMESTAMP`, img.RepositoryID, img.Tag, img.Digest, img.ContentType, img.Size, img.ArtifactType, img.PushedAt)
 	return img, err
 }
 
@@ -2020,8 +2032,16 @@ func (s *Store) GetRepoPendingGCStats(ctx context.Context, repo string) (int, in
 func (s *Store) GetRepoStats(ctx context.Context, repo string) (int, int64, error) {
 	nsName, repoName := splitRepoNamespacedName(repo)
 	var tagCount int
+	// Count tags (the number of rows) but size images: several tags commonly
+	// point at one digest, and summing per row would multiply that image's
+	// bytes by the number of tags. MAX(size) per digest keeps one value per
+	// image; the rows of a digest always carry the same size.
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM images i JOIN repositories r ON i.repository_id = r.id JOIN namespaces n ON n.id = r.namespace_id WHERE n.name=? AND r.name=? AND i.deleted = 0`, nsName, repoName).Scan(&tagCount)
+	if err != nil {
+		return 0, 0, err
+	}
 	var totalSize sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(i.size), 0) FROM images i JOIN repositories r ON i.repository_id = r.id JOIN namespaces n ON n.id = r.namespace_id WHERE n.name=? AND r.name=? AND i.deleted = 0`, nsName, repoName).Scan(&tagCount, &totalSize)
+	err = s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(sz), 0) FROM (SELECT MAX(i.size) AS sz FROM images i JOIN repositories r ON i.repository_id = r.id JOIN namespaces n ON n.id = r.namespace_id WHERE n.name=? AND r.name=? AND i.deleted = 0 GROUP BY i.digest)`, nsName, repoName).Scan(&totalSize)
 	size := int64(0)
 	if totalSize.Valid {
 		size = totalSize.Int64

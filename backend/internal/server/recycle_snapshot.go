@@ -40,12 +40,15 @@ func (s *Server) snapshotRecycleItems(rctx requestContext, repo, digest string) 
 				imageID = &img.ID
 			}
 		}
-		// Parse manifest body to compute actual image size
+		// Parse the manifest body to compute the image size: the recycle bin
+		// reports the space the digest will free, so index children are
+		// resolved instead of counting the child descriptor bytes (which made
+		// multi-arch digests look like they freed a few hundred bytes).
 		var manifestSize int64
 		if raw.Body != nil {
 			var m map[string]any
 			if err := json.Unmarshal(raw.Body, &m); err == nil {
-				manifestSize = computeManifestSize(m)
+				manifestSize = imageSize(rctx.Context(), s.client, repo, m)
 			}
 		}
 		if err := s.store.AddRecycleItem(rctx.Context(), store.RecycleItem{Repo: repo, Reference: tag, Digest: digest, ContentType: raw.ContentType, ManifestBody: raw.Body, Size: manifestSize, ImageID: imageID}); err != nil {

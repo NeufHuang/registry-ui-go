@@ -236,3 +236,44 @@ func TestListFavoriteImagesCanonicalRepoName(t *testing.T) {
 		t.Errorf("favorite repo names = %v, want python and lib/nginx", got)
 	}
 }
+
+// TestGetRepoStatsCountsSharedDigestOnce covers repositories whose tags point at
+// the same digest: the tag count stays the number of tags, while the size is
+// the sum over unique images instead of the image size multiplied by the
+// number of tags.
+func TestGetRepoStatsCountsSharedDigestOnce(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ns, err := st.UpsertNamespace(ctx, "lib")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := st.UpsertRepository(ctx, ns.ID, "nginx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{"1.25", "1.26", "latest"} {
+		if _, err := st.SyncImage(ctx, Image{RepositoryID: repo.ID, Tag: tag, Digest: "sha256:same", Size: 4096}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.SyncImage(ctx, Image{RepositoryID: repo.ID, Tag: "alpine", Digest: "sha256:other", Size: 8192}); err != nil {
+		t.Fatal(err)
+	}
+
+	count, size, err := st.GetRepoStats(ctx, "lib/nginx")
+	if err != nil {
+		t.Fatalf("GetRepoStats: %v", err)
+	}
+	if count != 4 {
+		t.Errorf("GetRepoStats tag count = %d, want 4 (one per tag)", count)
+	}
+	if size != 4096+8192 {
+		t.Errorf("GetRepoStats size = %d, want %d (one value per digest)", size, 4096+8192)
+	}
+}

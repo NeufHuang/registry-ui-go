@@ -14,26 +14,39 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 el('settingsBtn').onclick = () => {
   updateStatusDetail();
   switchSettingsTab('ui');
-  // Admin-only tabs require a real admin account (the /api/admin/* routes
-  // reject the AUTH_MODE=off nil user), but GC is open in that mode, so it uses
-  // the broader isAdminUser() check.
+  // The admin surfaces need different privileges:
+  //   users / API tokens / webhooks -> a real administrator account (the
+  //     /api/admin/{users,tokens,webhooks} routes reject the AUTH_MODE=off
+  //     nil user outright);
+  //   repo settings (global policy, immutable rules, GC) -> requireAdmin(),
+  //     which stays open in AUTH_MODE=off because the legacy single-user
+  //     model has no account to check. Gating 仓库设置 like the other tabs
+  //     hid the only place global policy can be edited in that mode.
   const isAdmin = !!state.user?.isAdmin;
   const canAdminister = isAdminUser();
-  ['users', 'admin'].forEach(tab => {
-    const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
-    if (btn) btn.style.display = isAdmin ? '' : 'none';
-  });
-  // In auth-off mode the admin tabs are hidden (the routes really do 403), but
-  // say so explicitly instead of leaving the user to wonder where user
-  // management went.
+  const usersTab = document.querySelector('.tab-btn[data-tab="users"]');
+  if (usersTab) usersTab.style.display = isAdmin ? '' : 'none';
+  const adminTab = document.querySelector('.tab-btn[data-tab="admin"]');
+  if (adminTab) adminTab.style.display = canAdminister ? '' : 'none';
+  // Credentials (API tokens, webhooks) only exist for authenticated admins;
+  // hide them with a hint instead of offering buttons that always 403.
+  const credentials = el('adminCredentialsSection');
+  if (credentials) credentials.classList.toggle('hidden-ui', !isAdmin);
+  // In auth-off mode say explicitly which admin features are unavailable
+  // instead of leaving the user to wonder where they went.
   const authOffHint = el('authOffHint');
   if (authOffHint) authOffHint.classList.toggle('hidden-ui', isAdmin);
+  const authOffAdminHint = el('authOffAdminHint');
+  if (authOffAdminHint) authOffAdminHint.classList.toggle('hidden-ui', isAdmin);
   const gcBtn = el('runManualGC');
   if (gcBtn) gcBtn.style.display = canAdminister ? '' : 'none';
-  if (isAdmin) {
+  if (canAdminister) {
     const statsBox = el('repoStatsDetails');
     if (statsBox) { statsBox.classList.remove('hidden-ui'); loadStats(); }
-    loadUsers(); loadImmutableRules(); loadTokens(); loadWebhooks(); loadGlobalTagPolicy();
+    loadImmutableRules(); loadGlobalTagPolicy();
+  }
+  if (isAdmin) {
+    loadUsers(); loadTokens(); loadWebhooks();
   }
   fetchDiskUsage();
   showModal('settingsModal');

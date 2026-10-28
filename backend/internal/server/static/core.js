@@ -75,6 +75,17 @@ async function api(path, options = {}) {
     // {"error":"gc_expired"} carry it in `error`, so accept both.
     const rawCode = data && typeof data === 'object' ? (data.code || data.error) : null;
     const code = typeof rawCode === 'string' && /^[a-z][a-z0-9_]*$/i.test(rawCode) ? rawCode : null;
+    // A pending forced password change is answered with 403 on every
+    // endpoint. Normally loadUser() sees the flag first and shows the profile
+    // modal, but a request racing that check (or a stale shell) must not
+    // dead-end in an error toast: reopen the change-password form instead.
+    if (res.status === 403 && code === 'password_change_required') {
+      state.mustChangePassword = true;
+      if (typeof showModal === 'function' && el('profileModal')) {
+        showModal('profileModal');
+        toast(t('mustChangePassword'), true, true);
+      }
+    }
     const err = new Error((code && t(code) !== code ? t(code) : null) || data?.details || data?.error || text || `${res.status} ${res.statusText}`);
     err.code = code;
     err.status = res.status;
